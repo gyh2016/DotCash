@@ -36,7 +36,7 @@ export const CreateRecordPage = () => {
   const [rateProvider, setRateProvider] = useState('');
   const [isRateLoading, setIsRateLoading] = useState(false);
 
-  const { register, handleSubmit, watch, setValue } = useForm<RecordFormValues>({
+  const { register, handleSubmit, watch, setValue, reset } = useForm<RecordFormValues>({
     defaultValues: {
       type: 'expense',
       fromAccountId: '',
@@ -70,7 +70,7 @@ export const CreateRecordPage = () => {
   const canUseFx = accountReady && hasBothCurrencies && !canDirectSettle;
   const currentBalanceMinor = useMemo(() => {
     if (!fromAccount) return null;
-    return calculateAccountBalanceMinor(fromAccount.initialBalanceMinor, fromAccount.id, allRecords);
+    return calculateAccountBalanceMinor(fromAccount.id, allRecords);
   }, [fromAccount, allRecords]);
   const willSpend = type === 'expense' || type === 'transfer';
   const projectedBalanceMinor = useMemo(() => {
@@ -85,7 +85,7 @@ export const CreateRecordPage = () => {
         accountsRepository.listActive(),
         transactionsRepository.listAll(),
       ]);
-      setAccounts(accountList.filter((item) => !item.isArchived));
+      setAccounts(accountList);
       setAllRecords(records);
     };
     void load();
@@ -183,7 +183,7 @@ export const CreateRecordPage = () => {
 
     if ((submitValues.type === 'expense' || submitValues.type === 'transfer') && fromAccount && !(fromAccount.allowOverdraft ?? true)) {
       const latestRecords = await transactionsRepository.listAll();
-      const latestBalanceMinor = calculateAccountBalanceMinor(fromAccount.initialBalanceMinor, fromAccount.id, latestRecords);
+      const latestBalanceMinor = calculateAccountBalanceMinor(fromAccount.id, latestRecords);
       const latestProjectedMinor = latestBalanceMinor - settledAmountMinor;
       if (latestProjectedMinor < 0) {
         setBalanceError(`余额不足：当前余额 ${formatMoney(latestBalanceMinor, fromAccount.baseCurrency)}。`);
@@ -216,6 +216,21 @@ export const CreateRecordPage = () => {
 
     setEstimatedMinor(null);
     setSubmitMessage('记录已保存');
+    setRateError('');
+    setRateProvider('');
+    reset({
+      type: 'expense',
+      fromAccountId: '',
+      toAccountId: '',
+      categoryId: '',
+      amount: 0,
+      originalCurrency: '',
+      settledCurrency: '',
+      occurredAt: toLocalInputValue(new Date().toISOString()),
+      note: '',
+      fxMode: 'api',
+      fxRate: 1,
+    });
     setAllRecords(await transactionsRepository.listAll());
   });
 

@@ -3,20 +3,30 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 const tabs = [
   { path: '/home', label: '首页' },
-  { path: '/records', label: '记录' },
-  { path: '/create', label: '新增' },
+  { path: '/records', label: '交易记录' },
   { path: '/accounts', label: '账户' },
   { path: '/stats', label: '统计' },
 ];
 
 export const Layout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
-  const isRecordsRoute = location.pathname.startsWith('/records');
+  const isWideRoute = (
+    location.pathname.startsWith('/records')
+    || location.pathname.startsWith('/accounts')
+    || location.pathname.startsWith('/home')
+    || location.pathname.startsWith('/stats')
+  );
 
   return (
     <div className="layout">
       <aside className="desktop-nav">
         <h1>点金记账</h1>
+        <NavLink
+          to="/create"
+          className={({ isActive }) => (isActive ? 'desktop-create-btn active' : 'desktop-create-btn')}
+        >
+          + 新增交易
+        </NavLink>
         <nav>
           {tabs.map((tab) => (
             <NavLink
@@ -29,17 +39,38 @@ export const Layout = ({ children }: PropsWithChildren) => {
           ))}
         </nav>
       </aside>
-      <main className={isRecordsRoute ? 'content content-wide' : 'content'}>{children}</main>
+      <main className={isWideRoute ? 'content content-wide' : 'content'}>{children}</main>
       <nav className="mobile-nav">
-        {tabs.map((tab) => (
-          <NavLink
-            key={tab.path}
-            to={tab.path}
-            className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
-          >
-            {tab.label}
-          </NavLink>
-        ))}
+        <NavLink
+          to="/home"
+          className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
+        >
+          首页
+        </NavLink>
+        <NavLink
+          to="/records"
+          className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
+        >
+          交易记录
+        </NavLink>
+        <NavLink
+          to="/create"
+          className={({ isActive }) => (isActive ? 'mobile-create-btn active' : 'mobile-create-btn')}
+        >
+          新增交易
+        </NavLink>
+        <NavLink
+          to="/accounts"
+          className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
+        >
+          账户
+        </NavLink>
+        <NavLink
+          to="/stats"
+          className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
+        >
+          统计
+        </NavLink>
       </nav>
     </div>
   );

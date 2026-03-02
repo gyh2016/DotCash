@@ -38,6 +38,12 @@ interface EditForm {
   note: string;
 }
 
+interface ActualSettleForm {
+  transactionId: string;
+  settledCurrency: string;
+  amount: number;
+}
+
 const DEFAULT_FILTERS: RecordFilters = {
   type: 'all',
   accountId: '',
@@ -58,11 +64,14 @@ export const RecordsPage = () => {
   const [categories, setCategories] = useState<Category[]>([]);
   const [filters, setFilters] = useState<RecordFilters>(DEFAULT_FILTERS);
   const [editing, setEditing] = useState<EditForm | null>(null);
+  const [actualEditing, setActualEditing] = useState<ActualSettleForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savingActual, setSavingActual] = useState(false);
   const [editRateLoading, setEditRateLoading] = useState(false);
   const [editRateError, setEditRateError] = useState('');
   const [editRateProvider, setEditRateProvider] = useState('');
   const [editBalanceError, setEditBalanceError] = useState('');
+  const [actualEditError, setActualEditError] = useState('');
   const [dateRangeError, setDateRangeError] = useState('');
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
@@ -82,6 +91,21 @@ export const RecordsPage = () => {
     () => accounts.find((account) => account.id === (editing?.fromAccountId ?? '')),
     [accounts, editing?.fromAccountId],
   );
+  const actualEditingRecord = useMemo(
+    () => records.find((item) => item.transaction.id === (actualEditing?.transactionId ?? '')) ?? null,
+    [records, actualEditing?.transactionId],
+  );
+  const actualEditingAccount = useMemo(
+    () => accounts.find((account) => account.id === (actualEditingRecord?.transaction.fromAccountId ?? '')) ?? null,
+    [accounts, actualEditingRecord?.transaction.fromAccountId],
+  );
+  const actualAllowedCurrencies = useMemo(() => {
+    if (!actualEditingAccount) return [];
+    const source = actualEditingAccount.allowedCurrencies?.length
+      ? actualEditingAccount.allowedCurrencies
+      : [actualEditingAccount.baseCurrency];
+    return Array.from(new Set(source));
+  }, [actualEditingAccount]);
 
   const editingSupportedCurrencies = useMemo(() => {
     if (!editingFromAccount) return CURRENCY_OPTIONS.map((item) => item.code);
@@ -107,7 +131,7 @@ export const RecordsPage = () => {
   const editingCurrentBalanceMinor = useMemo(() => {
     if (!editingFromAccount || !editing) return null;
     const recordsWithoutCurrent = records.filter((item) => item.transaction.id !== editing.transactionId);
-    return calculateAccountBalanceMinor(editingFromAccount.initialBalanceMinor, editingFromAccount.id, recordsWithoutCurrent);
+    return calculateAccountBalanceMinor(editingFromAccount.id, recordsWithoutCurrent);
   }, [editingFromAccount, editing, records]);
   const editingWillSpend = editing?.type === 'expense' || editing?.type === 'transfer';
   const editingProjectedBalanceMinor = useMemo(() => {
@@ -227,6 +251,69 @@ export const RecordsPage = () => {
     await load();
   };
 
+  const beginActualEdit = (record: RecordWithAmount) => {
+    if (record.transaction.deletedAt) return;
+    const amountMinor = record.amount.actualSettledAmountMinor ?? record.amount.settledAmountMinor;
+    setActualEditing({
+      transactionId: record.transaction.id,
+      settledCurrency: record.amount.settledCurrency,
+      amount: amountMinor / 100,
+    });
+    setActualEditError('');
+  };
+
+  const submitActualEdit = async () => {
+    if (!actualEditing || !actualEditingRecord) return;
+    if (!actualEditing.settledCurrency || actualEditing.amount <= 0) {
+      setActualEditError('请填写有效的实际入账金额和币种。');
+      return;
+    }
+    if (!actualAllowedCurrencies.includes(actualEditing.settledCurrency)) {
+      setActualEditError('实际入账币种必须在该账户支持币种内。');
+      return;
+    }
+
+    setSavingActual(true);
+    try {
+      const allLatest = await transactionsRepository.listAll({ includeDeleted: true });
+      const fresh = allLatest.find((item) => item.transaction.id === actualEditing.transactionId);
+      if (!fresh) {
+        setActualEditError('该记录不存在或已被删除。');
+        return;
+      }
+      const freshAccount = accounts.find((account) => account.id === fresh.transaction.fromAccountId);
+      const freshAllowed = freshAccount
+        ? Array.from(new Set(freshAccount.allowedCurrencies?.length ? freshAccount.allowedCurrencies : [freshAccount.baseCurrency]))
+        : [];
+      if (!freshAllowed.includes(actualEditing.settledCurrency)) {
+        setActualEditError('实际入账币种必须在该账户支持币种内。');
+        return;
+      }
+
+      const actualMinor = toMinor(actualEditing.amount);
+      await transactionsRepository.update(actualEditing.transactionId, {
+        type: fresh.transaction.type,
+        fromAccountId: fresh.transaction.fromAccountId,
+        toAccountId: fresh.transaction.toAccountId,
+        categoryId: fresh.transaction.categoryId,
+        note: fresh.transaction.note,
+        occurredAt: fresh.transaction.occurredAt,
+        amount: {
+          ...fresh.amount,
+          settledCurrency: actualEditing.settledCurrency,
+          settledAmountMinor: actualMinor,
+          actualSettledAmountMinor: actualMinor,
+          isEstimated: false,
+        },
+      });
+
+      setActualEditing(null);
+      await load();
+    } finally {
+      setSavingActual(false);
+    }
+  };
+
   const submitEdit = async () => {
     if (!editing) return;
     if (!editing.fromAccountId) {
@@ -252,19 +339,24 @@ export const RecordsPage = () => {
     setSaving(true);
     try {
       const originalAmountMinor = toMinor(editing.amount);
+      const originalRow = records.find((item) => item.transaction.id === editing.transactionId);
       const sameCurrency = editingCanDirectSettle;
       const settledAmountMinor = sameCurrency
         ? originalAmountMinor
         : Math.round(originalAmountMinor * editing.fxRate);
+      const originalAmount = originalRow?.amount;
+      const forceReEstimate = !!originalAmount && (
+        originalAmount.originalAmountMinor !== originalAmountMinor
+        || originalAmount.originalCurrency !== editing.originalCurrency
+        || originalAmount.settledCurrency !== editing.settledCurrency
+      );
+      const nextIsEstimated = forceReEstimate ? true : !sameCurrency;
+      const nextActualSettled = forceReEstimate ? null : (originalAmount?.actualSettledAmountMinor ?? null);
 
       if ((editing.type === 'expense' || editing.type === 'transfer') && editingFromAccount && !(editingFromAccount.allowOverdraft ?? true)) {
         const latestRecords = await transactionsRepository.listAll();
         const recordsWithoutCurrent = latestRecords.filter((item) => item.transaction.id !== editing.transactionId);
-        const latestBalanceMinor = calculateAccountBalanceMinor(
-          editingFromAccount.initialBalanceMinor,
-          editingFromAccount.id,
-          recordsWithoutCurrent,
-        );
+        const latestBalanceMinor = calculateAccountBalanceMinor(editingFromAccount.id, recordsWithoutCurrent);
         const latestProjectedMinor = latestBalanceMinor - settledAmountMinor;
         if (latestProjectedMinor < 0) {
           setEditBalanceError(`余额不足：当前余额 ${formatMoney(latestBalanceMinor, editingFromAccount.baseCurrency)}。`);
@@ -285,8 +377,8 @@ export const RecordsPage = () => {
           originalCurrency: editing.originalCurrency,
           settledAmountMinor,
           settledCurrency: editing.settledCurrency,
-          actualSettledAmountMinor: null,
-          isEstimated: !sameCurrency,
+          actualSettledAmountMinor: nextActualSettled,
+          isEstimated: nextIsEstimated,
           fxRate: sameCurrency ? 1 : editing.fxRate,
           fxSource: sameCurrency ? null : editing.fxMode,
           fxProvider: sameCurrency ? null : editing.fxMode === 'api' ? editRateProvider || 'auto' : 'manual',
@@ -761,6 +853,59 @@ export const RecordsPage = () => {
         </div>
       ) : null}
 
+      {actualEditing && actualEditingRecord ? (
+        <div className="modal-overlay" onClick={() => setActualEditing(null)}>
+          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>更正实际入账</h3>
+            <div className="record-form">
+              <section className="form-section">
+                <h3>实际入账信息</h3>
+                <div className="form-grid">
+                  <label>
+                    实际入账币种
+                    <select
+                      value={actualEditing.settledCurrency}
+                      onChange={(event) =>
+                        setActualEditing((prev) => (prev ? { ...prev, settledCurrency: event.target.value } : prev))
+                      }
+                    >
+                      {actualAllowedCurrencies.map((currency) => (
+                        <option key={currency} value={currency}>
+                          {formatCurrencyLabel(currency)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    实际入账金额
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={actualEditing.amount}
+                      onChange={(event) =>
+                        setActualEditing((prev) => (prev ? { ...prev, amount: Number(event.target.value || 0) } : prev))
+                      }
+                    />
+                  </label>
+                </div>
+                <p className="hint">
+                  原预估：{formatMoney(actualEditingRecord.amount.settledAmountMinor, actualEditingRecord.amount.settledCurrency)}
+                </p>
+              </section>
+              {actualEditError ? <p className="error-text">{actualEditError}</p> : null}
+              <div className="record-actions-row">
+                <button type="button" className="ghost-btn" onClick={() => setActualEditing(null)}>
+                  取消
+                </button>
+                <button type="button" onClick={() => void submitActualEdit()} disabled={savingActual}>
+                  {savingActual ? '保存中...' : '保存更正'}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       <div className="table-wrap records-desktop-table">
         <table className="records-table">
           <thead>
@@ -802,6 +947,9 @@ export const RecordsPage = () => {
                     <div className="record-actions-inline">
                       <button type="button" className="ghost-btn" onClick={() => beginEdit(item)}>
                         编辑
+                      </button>
+                      <button type="button" className="ghost-btn" onClick={() => beginActualEdit(item)}>
+                        更正入账
                       </button>
                       <button type="button" className="danger-btn" onClick={() => void removeRecord(item.transaction.id)}>
                         删除
@@ -848,6 +996,9 @@ export const RecordsPage = () => {
               <div className="record-actions-inline">
                 <button type="button" className="ghost-btn" onClick={() => beginEdit(item)}>
                   编辑
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => beginActualEdit(item)}>
+                  更正入账
                 </button>
                 <button type="button" className="danger-btn" onClick={() => void removeRecord(item.transaction.id)}>
                   删除

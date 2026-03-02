@@ -6,8 +6,15 @@ export interface CreateAccountInput {
   name: string;
   type: Account['type'];
   baseCurrency: string;
-  initialBalanceMinor: number;
   allowedCurrencies: string[];
+  network: Account['network'];
+  allowOverdraft: boolean;
+}
+
+export interface UpdateAccountInput {
+  name: string;
+  type: Account['type'];
+  network: Account['network'];
   allowOverdraft: boolean;
 }
 
@@ -21,7 +28,6 @@ export const accountsRepository = {
     const account: Account = {
       id: newId(),
       ...input,
-      isArchived: false,
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
@@ -29,5 +35,13 @@ export const accountsRepository = {
 
     await db.accounts.add(account);
     return account;
+  },
+
+  async update(accountId: string, input: UpdateAccountInput) {
+    const now = new Date().toISOString();
+    await db.accounts.update(accountId, {
+      ...input,
+      updatedAt: now,
+    });
   },
 };

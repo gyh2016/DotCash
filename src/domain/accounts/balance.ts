@@ -1,7 +1,6 @@
 import type { RecordWithAmount } from '@/domain/types';
 
 export const calculateAccountBalanceMinor = (
-  initialBalanceMinor: number,
   accountId: string,
   records: RecordWithAmount[],
 ) => {
@@ -23,5 +22,5 @@ export const calculateAccountBalanceMinor = (
     }
 
     return balance;
-  }, initialBalanceMinor);
+  }, 0);
 };

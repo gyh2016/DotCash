@@ -1,4 +1,5 @@
 export type AccountType = 'cash' | 'debit_card' | 'credit_card' | 'ewallet' | 'other';
+export type AccountNetwork = 'unionpay' | 'visa' | 'mastercard' | 'jcb' | 'amex';
 export type TransactionType = 'income' | 'expense' | 'transfer';
 export type CategoryKind = 'income' | 'expense';
 export type FxSource = 'api' | 'manual';
@@ -8,10 +9,9 @@ export interface Account {
   name: string;
   type: AccountType;
   baseCurrency: string;
-  initialBalanceMinor: number;
   allowedCurrencies: string[];
+  network: AccountNetwork | null;
   allowOverdraft: boolean;
-  isArchived: boolean;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;

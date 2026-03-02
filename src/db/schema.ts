@@ -30,5 +30,53 @@ export class DotCashDB extends Dexie {
           }
         });
       });
+
+    this.version(3)
+      .stores({
+        accounts: 'id, name, deletedAt',
+        categories: 'id, kind, isSystem, isArchived, deletedAt',
+        transactions: 'id, type, fromAccountId, toAccountId, categoryId, occurredAt, deletedAt',
+        transactionAmounts: 'transactionId, settledCurrency, isEstimated',
+      })
+      .upgrade(async (tx) => {
+        await tx.table('accounts').toCollection().modify((account: {
+          allowOverdraft?: boolean;
+          initialBalanceMinor?: number;
+          isArchived?: boolean;
+          network?: string | null;
+        }) => {
+          if (typeof account.allowOverdraft !== 'boolean') {
+            account.allowOverdraft = true;
+          }
+          if (typeof account.network === 'undefined') {
+            account.network = null;
+          }
+          delete account.initialBalanceMinor;
+          delete account.isArchived;
+        });
+      });
+
+    this.version(4)
+      .stores({
+        accounts: 'id, name, deletedAt',
+        categories: 'id, kind, isSystem, isArchived, deletedAt',
+        transactions: 'id, type, fromAccountId, toAccountId, categoryId, occurredAt, deletedAt',
+        transactionAmounts: 'transactionId, settledCurrency, isEstimated',
+      })
+      .upgrade(async (tx) => {
+        await tx.table('accounts').toCollection().modify((account: {
+          type?: string;
+          network?: string | null;
+        }) => {
+          const isCard = account.type === 'debit_card' || account.type === 'credit_card';
+          if (!isCard) {
+            account.network = null;
+            return;
+          }
+          if (!account.network) {
+            account.network = 'unionpay';
+          }
+        });
+      });
   }
 }
