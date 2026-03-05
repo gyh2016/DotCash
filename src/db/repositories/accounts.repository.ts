@@ -1,6 +1,6 @@
 import { db } from '@/db';
 import type { Account } from '@/domain/types';
-import { newId } from '@/shared/utils/id';
+import { newAccountId } from '@/shared/utils/id';
 
 export interface CreateAccountInput {
   name: string;
@@ -30,7 +30,7 @@ export const accountsRepository = {
   async create(input: CreateAccountInput) {
     const now = new Date().toISOString();
     const account: Account = {
-      id: newId(),
+      id: newAccountId(),
       ...input,
       createdAt: now,
       updatedAt: now,

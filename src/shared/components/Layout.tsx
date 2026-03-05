@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 const tabs = [
   { path: '/home', label: '首页' },
-  { path: '/records', label: '交易记录' },
+  { path: '/records', label: '交易' },
   { path: '/accounts', label: '账户' },
   { path: '/stats', label: '统计' },
 ];
@@ -11,7 +11,16 @@ const tabs = [
 export const Layout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
   const [now, setNow] = useState(() => new Date());
-  const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const timezoneId = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const timezoneText = useMemo(() => {
+    const tzName = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timezoneId,
+      timeZoneName: 'long',
+    })
+      .formatToParts(now)
+      .find((part) => part.type === 'timeZoneName')?.value;
+    return tzName ? `${tzName}（${timezoneId}）` : timezoneId;
+  }, [now, timezoneId]);
   const timeText = useMemo(
     () =>
       new Intl.DateTimeFormat('zh-CN', {
@@ -21,7 +30,7 @@ export const Layout = ({ children }: PropsWithChildren) => {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
-        hour12: false,
+        hour12: true,
       }).format(now),
     [now],
   );
@@ -60,8 +69,9 @@ export const Layout = ({ children }: PropsWithChildren) => {
           ))}
         </nav>
         <div className="sidebar-datetime">
-          <p>{timezone}</p>
-          <p>{timeText}</p>
+          <p>当前时区：</p>
+          <p className="sidebar-datetime-value">{timezoneText}</p>
+          <p>本地时间：{timeText}</p>
         </div>
       </aside>
       <main className={isWideRoute ? 'content content-wide' : 'content'}>{children}</main>
@@ -76,7 +86,7 @@ export const Layout = ({ children }: PropsWithChildren) => {
           to="/records"
           className={({ isActive }) => (isActive ? 'mobile-btn active' : 'mobile-btn')}
         >
-          交易记录
+          交易
         </NavLink>
         <NavLink
           to="/create"

@@ -1,6 +1,6 @@
 import { db } from '@/db';
 import type { Transaction, TransactionAmount, TransactionType } from '@/domain/types';
-import { newId } from '@/shared/utils/id';
+import { newTransactionId } from '@/shared/utils/id';
 
 export interface CreateTransactionInput {
   type: TransactionType;
@@ -50,7 +50,7 @@ export const transactionsRepository = {
   async create(input: CreateTransactionInput) {
     const now = new Date().toISOString();
     const transaction: Transaction = {
-      id: newId(),
+      id: newTransactionId(),
       type: input.type,
       fromAccountId: input.fromAccountId,
       toAccountId: input.toAccountId,

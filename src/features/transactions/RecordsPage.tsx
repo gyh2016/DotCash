@@ -87,6 +87,7 @@ export const RecordsPage = () => {
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const editRateRequestRef = useRef(0);
+  const editRateFetchKeyRef = useRef('');
   const canPortal = typeof document !== 'undefined';
 
   const accountNameMap = useMemo(
@@ -144,7 +145,13 @@ export const RecordsPage = () => {
     return uniqueSources
       .filter((source) => source !== editing.settledCurrency)
       .map((source) => ({ from: source, to: editing.settledCurrency, key: toPairKey(source, editing.settledCurrency) }));
-  }, [editing, editingAccountReady]);
+  }, [
+    editingAccountReady,
+    editing?.originalCurrency,
+    editing?.settledCurrency,
+    editing?.discountCurrency,
+    editing?.cashbackCurrency,
+  ]);
   const editingMainRatePairKey = useMemo(() => {
     if (!editing || !editing.originalCurrency || !editing.settledCurrency || editing.originalCurrency === editing.settledCurrency) return '';
     return toPairKey(editing.originalCurrency, editing.settledCurrency);
@@ -516,14 +523,22 @@ export const RecordsPage = () => {
     const loadEditRate = async () => {
       if (!editing || editing.fxMode !== 'api') {
         setEditRateLoading(false);
+        editRateFetchKeyRef.current = '';
         return;
       }
       if (editingRequiredRatePairs.length === 0) {
         setEditRateLoading(false);
         setEditRateError('');
         setEditRateProvider('');
+        editRateFetchKeyRef.current = '';
         return;
       }
+
+      const fetchKey = `${editing.settledCurrency}|${editingRequiredRatePairs.map((pair) => pair.from).sort().join(',')}`;
+      if (editRateFetchKeyRef.current === fetchKey) {
+        return;
+      }
+      editRateFetchKeyRef.current = fetchKey;
 
       const requestId = ++editRateRequestRef.current;
       try {
@@ -542,7 +557,12 @@ export const RecordsPage = () => {
         setEditFxRates((prev) => ({ ...prev, ...nextRates }));
         setEditFxProviders((prev) => ({ ...prev, ...nextProviders }));
         if (editingMainRatePairKey && nextRates[editingMainRatePairKey]) {
-          setEditing((prev) => (prev ? { ...prev, fxRate: nextRates[editingMainRatePairKey] } : prev));
+          const nextMainRate = nextRates[editingMainRatePairKey];
+          setEditing((prev) => {
+            if (!prev) return prev;
+            if (Math.abs(prev.fxRate - nextMainRate) <= 0.0000001) return prev;
+            return { ...prev, fxRate: nextMainRate };
+          });
         }
         setEditRateProvider(quote.provider);
         setEditRateError('');

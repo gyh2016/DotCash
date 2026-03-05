@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useForm } from 'react-hook-form';
 import { FilePenLine, RotateCcw, Trash2 } from 'lucide-react';
 import { accountsRepository } from '@/db/repositories/accounts.repository';
@@ -56,6 +57,7 @@ const isCardType = (type: AccountType) => type === 'debit_card' || type === 'cre
 const normalizeName = (name: string) => name.trim().toLowerCase();
 
 export const AccountsPage = () => {
+  const canPortal = typeof document !== 'undefined';
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [records, setRecords] = useState<RecordWithAmount[]>([]);
   const [currencyQuery, setCurrencyQuery] = useState('');
@@ -245,6 +247,7 @@ export const AccountsPage = () => {
   };
 
   const onSubmitCreate = handleCreateSubmit(async (values) => {
+    setCurrencyDropdownOpen(false);
     const trimmedName = values.name.trim();
     if (!trimmedName) {
       setCreateError('账户名称不能为空。');
@@ -280,6 +283,9 @@ export const AccountsPage = () => {
 
       closeCreateModal();
       await loadData();
+    } catch (error) {
+      console.error(error);
+      setCreateError('保存失败，请稍后重试。');
     } finally {
       setSavingCreate(false);
     }
@@ -550,17 +556,17 @@ export const AccountsPage = () => {
         </div>
       </div>
 
-      {createOpen ? (
+      {createOpen && canPortal ? createPortal((
         <div className="modal-overlay" onClick={closeCreateModal}>
-          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card accounts-modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>新建账户</h3>
-            <form className="record-form" onSubmit={onSubmitCreate}>
+            <form className="record-form" noValidate onSubmit={onSubmitCreate}>
               <section className="form-section">
                 <h3>基础信息</h3>
                 <div className="form-grid">
                   <label>
                     名称
-                    <input required {...registerCreate('name')} placeholder="例如：招商银行储蓄卡" />
+                    <input {...registerCreate('name')} placeholder="例如：招商银行储蓄卡" />
                   </label>
                   <label>
                     类型
@@ -649,26 +655,30 @@ export const AccountsPage = () => {
                 <button type="button" className="ghost-btn" onClick={closeCreateModal}>
                   取消
                 </button>
-                <button type="submit" disabled={savingCreate}>
+                <button
+                  type="submit"
+                  onClick={() => setCurrencyDropdownOpen(false)}
+                  disabled={savingCreate}
+                >
                   {savingCreate ? '保存中...' : '保存账户'}
                 </button>
               </div>
             </form>
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
 
-      {editingAccount ? (
+      {editingAccount && canPortal ? createPortal((
         <div className="modal-overlay" onClick={closeEditModal}>
-          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card accounts-modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>编辑账户</h3>
-            <form className="record-form" onSubmit={onSubmitEdit}>
+            <form className="record-form" noValidate onSubmit={onSubmitEdit}>
               <section className="form-section">
                 <h3>基础信息</h3>
                 <div className="form-grid">
                   <label>
                     名称
-                    <input required {...registerEdit('name')} />
+                    <input {...registerEdit('name')} />
                   </label>
                   <label>
                     类型
@@ -712,7 +722,7 @@ export const AccountsPage = () => {
             </form>
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
     </PageCard>
   );
 };
