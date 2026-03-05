@@ -15,6 +15,37 @@ export const App = () => {
     void seedDefaults();
   }, []);
 
+  useEffect(() => {
+    const handleNumberWheel = (event: WheelEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const numberInput = target.closest('input[type="number"]');
+      if (!(numberInput instanceof HTMLInputElement)) return;
+      if (document.activeElement !== numberInput) return;
+      event.preventDefault();
+    };
+
+    document.addEventListener('wheel', handleNumberWheel, { passive: false, capture: true });
+    return () => {
+      document.removeEventListener('wheel', handleNumberWheel, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncModalOpen = () => {
+      const hasModal = !!document.querySelector('.modal-overlay');
+      document.body.classList.toggle('modal-open', hasModal);
+    };
+
+    syncModalOpen();
+    const observer = new MutationObserver(syncModalOpen);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      document.body.classList.remove('modal-open');
+    };
+  }, []);
+
   return (
     <Layout>
       <Routes>

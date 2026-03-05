@@ -1,5 +1,5 @@
 export type AccountType = 'cash' | 'debit_card' | 'credit_card' | 'ewallet' | 'other';
-export type AccountNetwork = 'unionpay' | 'visa' | 'mastercard' | 'jcb' | 'amex';
+export type AccountNetwork = 'unionpay' | 'visa' | 'mastercard' | 'jcb' | 'amex' | 'other';
 export type TransactionType = 'income' | 'expense' | 'transfer';
 export type CategoryKind = 'income' | 'expense';
 export type FxSource = 'api' | 'manual';
@@ -47,6 +47,10 @@ export interface TransactionAmount {
   originalCurrency: string;
   settledAmountMinor: number;
   settledCurrency: string;
+  cashbackAmountMinor: number;
+  cashbackCurrency: string;
+  discountAmountMinor: number;
+  discountCurrency: string;
   actualSettledAmountMinor: number | null;
   isEstimated: boolean;
   fxRate: number | null;

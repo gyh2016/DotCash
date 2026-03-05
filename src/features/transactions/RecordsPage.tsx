@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Check, FilePenLine, RotateCcw, Trash2 } from 'lucide-react';
 import { accountsRepository } from '@/db/repositories/accounts.repository';
 import { categoriesRepository } from '@/db/repositories/categories.repository';
 import { transactionsRepository } from '@/db/repositories/transactions.repository';
-import { fetchAutoRate } from '@/domain/fx/provider';
+import { fetchAutoRatesToTarget } from '@/domain/fx/provider';
 import { calculateAccountBalanceMinor } from '@/domain/accounts/balance';
 import type { Account, Category, RecordWithAmount, TransactionType } from '@/domain/types';
 import { CURRENCY_OPTIONS, formatCurrencyLabel } from '@/shared/constants/currencies';
@@ -21,6 +23,7 @@ interface RecordFilters {
   minAmount: string;
   maxAmount: string;
   showDeleted: boolean;
+  showDeletedAccountRecords: boolean;
 }
 
 interface EditForm {
@@ -32,6 +35,10 @@ interface EditForm {
   amount: number;
   originalCurrency: string;
   settledCurrency: string;
+  cashbackAmount: number;
+  cashbackCurrency: string;
+  discountAmount: number;
+  discountCurrency: string;
   fxMode: 'api' | 'manual';
   fxRate: number;
   occurredAt: string;
@@ -54,11 +61,13 @@ const DEFAULT_FILTERS: RecordFilters = {
   minAmount: '',
   maxAmount: '',
   showDeleted: false,
+  showDeletedAccountRecords: false,
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 export const RecordsPage = () => {
+  const toPairKey = (from: string, to: string) => `${from}->${to}`;
   const [records, setRecords] = useState<RecordWithAmount[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -70,15 +79,22 @@ export const RecordsPage = () => {
   const [editRateLoading, setEditRateLoading] = useState(false);
   const [editRateError, setEditRateError] = useState('');
   const [editRateProvider, setEditRateProvider] = useState('');
+  const [editFxRates, setEditFxRates] = useState<Record<string, number>>({});
+  const [editFxProviders, setEditFxProviders] = useState<Record<string, string>>({});
   const [editBalanceError, setEditBalanceError] = useState('');
   const [actualEditError, setActualEditError] = useState('');
   const [dateRangeError, setDateRangeError] = useState('');
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const editRateRequestRef = useRef(0);
+  const canPortal = typeof document !== 'undefined';
 
   const accountNameMap = useMemo(
     () => Object.fromEntries(accounts.map((account) => [account.id, account.name])),
+    [accounts],
+  );
+  const accountDeletedMap = useMemo(
+    () => Object.fromEntries(accounts.map((account) => [account.id, account.deletedAt !== null])),
     [accounts],
   );
 
@@ -119,21 +135,43 @@ export const RecordsPage = () => {
   const editingHasBothCurrencies = !!editing && editing.originalCurrency !== '' && editing.settledCurrency !== '';
   const editingCanDirectSettle =
     !!editing && editing.originalCurrency !== '' && editingSupportedCurrencies.includes(editing.originalCurrency);
-  const editingCanUseFx = editingAccountReady && editingHasBothCurrencies && !editingCanDirectSettle;
   const editingDefaultSettleCurrency = editingFromAccount?.baseCurrency ?? '';
+  const editingRequiredRatePairs = useMemo(() => {
+    if (!editing || !editingAccountReady || !editing.settledCurrency) return [] as Array<{ from: string; to: string; key: string }>;
+    const candidates = [editing.originalCurrency, editing.discountCurrency || editing.settledCurrency, editing.cashbackCurrency || editing.settledCurrency]
+      .filter((item): item is string => !!item);
+    const uniqueSources = Array.from(new Set(candidates));
+    return uniqueSources
+      .filter((source) => source !== editing.settledCurrency)
+      .map((source) => ({ from: source, to: editing.settledCurrency, key: toPairKey(source, editing.settledCurrency) }));
+  }, [editing, editingAccountReady]);
+  const editingMainRatePairKey = useMemo(() => {
+    if (!editing || !editing.originalCurrency || !editing.settledCurrency || editing.originalCurrency === editing.settledCurrency) return '';
+    return toPairKey(editing.originalCurrency, editing.settledCurrency);
+  }, [editing?.originalCurrency, editing?.settledCurrency]);
   const editingEstimatedMinor = useMemo(() => {
     if (!editing || editing.amount <= 0 || !editingHasBothCurrencies) return null;
+    const getRate = (from: string, to: string) => {
+      if (from === to) return 1;
+      return editFxRates[toPairKey(from, to)];
+    };
     const originalMinor = toMinor(editing.amount);
-    if (editingCanDirectSettle) return originalMinor;
-    if (!Number.isFinite(editing.fxRate) || editing.fxRate <= 0) return null;
-    return Math.round(originalMinor * editing.fxRate);
-  }, [editing, editingHasBothCurrencies, editingCanDirectSettle]);
+    const mainRate = editingCanDirectSettle ? 1 : getRate(editing.originalCurrency, editing.settledCurrency);
+    if (!mainRate || mainRate <= 0) return null;
+    const baseMinor = Math.round(originalMinor * mainRate);
+    const cashbackRate = getRate(editing.cashbackCurrency || editing.settledCurrency, editing.settledCurrency);
+    const discountRate = getRate(editing.discountCurrency || editing.settledCurrency, editing.settledCurrency);
+    if (!cashbackRate || cashbackRate <= 0 || !discountRate || discountRate <= 0) return null;
+    const cashbackMinor = Math.round(toMinor(editing.cashbackAmount || 0) * cashbackRate);
+    const discountMinor = Math.round(toMinor(editing.discountAmount || 0) * discountRate);
+    return baseMinor - cashbackMinor - discountMinor;
+  }, [editing, editingHasBothCurrencies, editingCanDirectSettle, editFxRates]);
   const editingCurrentBalanceMinor = useMemo(() => {
     if (!editingFromAccount || !editing) return null;
     const recordsWithoutCurrent = records.filter((item) => item.transaction.id !== editing.transactionId);
     return calculateAccountBalanceMinor(editingFromAccount.id, recordsWithoutCurrent);
   }, [editingFromAccount, editing, records]);
-  const editingWillSpend = editing?.type === 'expense' || editing?.type === 'transfer';
+  const editingWillSpend = editing?.type === 'expense';
   const editingProjectedBalanceMinor = useMemo(() => {
     if (!editingWillSpend || editingCurrentBalanceMinor === null || editingEstimatedMinor === null) return null;
     return editingCurrentBalanceMinor - editingEstimatedMinor;
@@ -148,7 +186,7 @@ export const RecordsPage = () => {
   const load = async () => {
     const [allRecords, accountRows, categoryRows] = await Promise.all([
       transactionsRepository.listAll({ includeDeleted: true }),
-      accountsRepository.listActive(),
+      accountsRepository.listAll(),
       categoriesRepository.listAllActive(),
     ]);
 
@@ -172,6 +210,7 @@ export const RecordsPage = () => {
       const noteText = tx.note ?? '';
 
       if (!filters.showDeleted && tx.deletedAt !== null) return false;
+      if (!filters.showDeletedAccountRecords && accountDeletedMap[tx.fromAccountId]) return false;
       if (filters.type !== 'all' && tx.type !== filters.type) return false;
       if (filters.accountId && tx.fromAccountId !== filters.accountId) return false;
       if (filters.categoryId && tx.categoryId !== filters.categoryId) return false;
@@ -206,7 +245,7 @@ export const RecordsPage = () => {
 
       return true;
     });
-  }, [records, filters, accountNameMap, categoryNameMap]);
+  }, [records, filters, accountNameMap, categoryNameMap, accountDeletedMap]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -228,6 +267,10 @@ export const RecordsPage = () => {
       amount: record.amount.originalAmountMinor / 100,
       originalCurrency: record.amount.originalCurrency,
       settledCurrency: record.amount.settledCurrency,
+      cashbackAmount: (record.amount.cashbackAmountMinor ?? 0) / 100,
+      cashbackCurrency: record.amount.cashbackCurrency ?? record.amount.settledCurrency,
+      discountAmount: (record.amount.discountAmountMinor ?? 0) / 100,
+      discountCurrency: record.amount.discountCurrency ?? record.amount.settledCurrency,
       fxMode,
       fxRate: record.amount.fxRate ?? 1,
       occurredAt: toLocalInputValue(record.transaction.occurredAt),
@@ -237,6 +280,16 @@ export const RecordsPage = () => {
     setEditRateProvider('');
     setEditBalanceError('');
     setEditRateLoading(false);
+    const baseKey = record.amount.originalCurrency === record.amount.settledCurrency
+      ? ''
+      : toPairKey(record.amount.originalCurrency, record.amount.settledCurrency);
+    if (baseKey) {
+      setEditFxRates({ [baseKey]: Number((record.amount.fxRate ?? 1).toFixed(5)) });
+      setEditFxProviders({ [baseKey]: record.amount.fxProvider ?? record.amount.fxSource ?? '' });
+    } else {
+      setEditFxRates({});
+      setEditFxProviders({});
+    }
   };
 
   const removeRecord = async (transactionId: string) => {
@@ -248,6 +301,13 @@ export const RecordsPage = () => {
 
   const restoreRecord = async (transactionId: string) => {
     await transactionsRepository.restore(transactionId);
+    await load();
+  };
+
+  const hardDeleteRecord = async (transactionId: string) => {
+    const ok = window.confirm('确认永久删除这条记录？该操作不可恢复。');
+    if (!ok) return;
+    await transactionsRepository.hardDelete(transactionId);
     await load();
   };
 
@@ -324,36 +384,52 @@ export const RecordsPage = () => {
       setEditBalanceError('请选择交易币种和入账币种。');
       return;
     }
-    if (editing.type === 'transfer' && !editing.toAccountId) {
-      setEditBalanceError('转账记录必须选择入账账户。');
-      return;
-    }
-    if (editing.type !== 'transfer' && !editing.categoryId) {
+    if (!editing.categoryId) {
       setEditBalanceError('请选择分类。');
       return;
     }
-    if (editingCanUseFx && (!Number.isFinite(editing.fxRate) || editing.fxRate <= 0 || editRateLoading)) {
+    if (editing.fxMode === 'api' && editRateLoading) {
       setEditBalanceError('当前汇率不可用，请等待自动汇率完成或切换手动汇率。');
       return;
     }
+    const getRate = (from: string, to: string) => {
+      if (from === to) return 1;
+      return editFxRates[toPairKey(from, to)];
+    };
     setSaving(true);
     try {
       const originalAmountMinor = toMinor(editing.amount);
       const originalRow = records.find((item) => item.transaction.id === editing.transactionId);
       const sameCurrency = editingCanDirectSettle;
-      const settledAmountMinor = sameCurrency
-        ? originalAmountMinor
-        : Math.round(originalAmountMinor * editing.fxRate);
+      const mainRate = sameCurrency ? 1 : getRate(editing.originalCurrency, editing.settledCurrency);
+      if (!mainRate || mainRate <= 0) {
+        setEditBalanceError('存在未配置的汇率，请补全后再保存。');
+        return;
+      }
+      const cashbackRate = getRate(editing.cashbackCurrency || editing.settledCurrency, editing.settledCurrency);
+      const discountRate = getRate(editing.discountCurrency || editing.settledCurrency, editing.settledCurrency);
+      if (!cashbackRate || cashbackRate <= 0 || !discountRate || discountRate <= 0) {
+        setEditBalanceError('存在未配置的汇率，请补全后再保存。');
+        return;
+      }
+      const baseSettledAmountMinor = Math.round(originalAmountMinor * mainRate);
+      const cashbackSettledMinor = Math.round(toMinor(editing.cashbackAmount || 0) * cashbackRate);
+      const discountSettledMinor = Math.round(toMinor(editing.discountAmount || 0) * discountRate);
+      const settledAmountMinor = baseSettledAmountMinor - cashbackSettledMinor - discountSettledMinor;
       const originalAmount = originalRow?.amount;
       const forceReEstimate = !!originalAmount && (
         originalAmount.originalAmountMinor !== originalAmountMinor
         || originalAmount.originalCurrency !== editing.originalCurrency
         || originalAmount.settledCurrency !== editing.settledCurrency
       );
-      const nextIsEstimated = forceReEstimate ? true : !sameCurrency;
+      const involvedRates = editingRequiredRatePairs
+        .map((pair) => editFxRates[pair.key])
+        .filter((rate): rate is number => Number.isFinite(rate));
+      const hasDifferentRate = involvedRates.some((rate) => Math.abs(rate - mainRate) > 0.0000001);
+      const nextIsEstimated = forceReEstimate ? true : (!sameCurrency || hasDifferentRate);
       const nextActualSettled = forceReEstimate ? null : (originalAmount?.actualSettledAmountMinor ?? null);
 
-      if ((editing.type === 'expense' || editing.type === 'transfer') && editingFromAccount && !(editingFromAccount.allowOverdraft ?? true)) {
+      if (editing.type === 'expense' && editingFromAccount && !(editingFromAccount.allowOverdraft ?? true)) {
         const latestRecords = await transactionsRepository.listAll();
         const recordsWithoutCurrent = latestRecords.filter((item) => item.transaction.id !== editing.transactionId);
         const latestBalanceMinor = calculateAccountBalanceMinor(editingFromAccount.id, recordsWithoutCurrent);
@@ -368,8 +444,8 @@ export const RecordsPage = () => {
       await transactionsRepository.update(editing.transactionId, {
         type: editing.type,
         fromAccountId: editing.fromAccountId,
-        toAccountId: editing.type === 'transfer' ? editing.toAccountId || null : null,
-        categoryId: editing.type === 'transfer' ? null : editing.categoryId || null,
+        toAccountId: null,
+        categoryId: editing.categoryId || null,
         note: editing.note.trim() || null,
         occurredAt: localInputToUtcIso(editing.occurredAt),
         amount: {
@@ -377,11 +453,15 @@ export const RecordsPage = () => {
           originalCurrency: editing.originalCurrency,
           settledAmountMinor,
           settledCurrency: editing.settledCurrency,
+          cashbackAmountMinor: toMinor(editing.cashbackAmount || 0),
+          cashbackCurrency: editing.cashbackCurrency || editing.settledCurrency,
+          discountAmountMinor: toMinor(editing.discountAmount || 0),
+          discountCurrency: editing.discountCurrency || editing.settledCurrency,
           actualSettledAmountMinor: nextActualSettled,
           isEstimated: nextIsEstimated,
-          fxRate: sameCurrency ? 1 : editing.fxRate,
+          fxRate: mainRate,
           fxSource: sameCurrency ? null : editing.fxMode,
-          fxProvider: sameCurrency ? null : editing.fxMode === 'api' ? editRateProvider || 'auto' : 'manual',
+          fxProvider: sameCurrency ? null : editing.fxMode === 'api' ? ((editFxProviders[editingMainRatePairKey] ?? editRateProvider) || 'auto') : 'manual',
           fxTimestamp: new Date().toISOString(),
         },
       });
@@ -403,6 +483,8 @@ export const RecordsPage = () => {
       setEditRateError('');
       setEditRateProvider('');
       setEditRateLoading(false);
+      setEditFxRates({});
+      setEditFxProviders({});
       return;
     }
 
@@ -417,7 +499,7 @@ export const RecordsPage = () => {
   }, [editing, editingCanDirectSettle, editingSupportedCurrencies, editingDefaultSettleCurrency]);
 
   useEffect(() => {
-    if (!editing || editing.type === 'transfer') return;
+    if (!editing) return;
     const options = categories.filter((category) => category.kind === editing.type);
     if (options.length === 0) {
       if (editing.categoryId !== '') {
@@ -432,22 +514,36 @@ export const RecordsPage = () => {
 
   useEffect(() => {
     const loadEditRate = async () => {
-      if (!editing || !editingCanUseFx || editing.fxMode !== 'api') {
+      if (!editing || editing.fxMode !== 'api') {
         setEditRateLoading(false);
-        if (!editingCanUseFx) {
-          setEditRateError('');
-          setEditRateProvider('');
-        }
+        return;
+      }
+      if (editingRequiredRatePairs.length === 0) {
+        setEditRateLoading(false);
+        setEditRateError('');
+        setEditRateProvider('');
         return;
       }
 
       const requestId = ++editRateRequestRef.current;
       try {
         setEditRateLoading(true);
-        setEditing((prev) => (prev ? { ...prev, fxRate: Number.NaN } : prev));
-        const quote = await fetchAutoRate(editing.originalCurrency, editing.settledCurrency);
+        const sources = editingRequiredRatePairs.map((pair) => pair.from);
+        const quote = await fetchAutoRatesToTarget(editing.settledCurrency, sources);
         if (requestId !== editRateRequestRef.current) return;
-        setEditing((prev) => (prev ? { ...prev, fxRate: quote.rate } : prev));
+        const nextRates: Record<string, number> = {};
+        const nextProviders: Record<string, string> = {};
+        for (const pair of editingRequiredRatePairs) {
+          const nextRate = quote.rates[pair.from];
+          if (!nextRate || nextRate <= 0) continue;
+          nextRates[pair.key] = Number(nextRate.toFixed(5));
+          nextProviders[pair.key] = quote.providers[pair.from] ?? quote.provider;
+        }
+        setEditFxRates((prev) => ({ ...prev, ...nextRates }));
+        setEditFxProviders((prev) => ({ ...prev, ...nextProviders }));
+        if (editingMainRatePairKey && nextRates[editingMainRatePairKey]) {
+          setEditing((prev) => (prev ? { ...prev, fxRate: nextRates[editingMainRatePairKey] } : prev));
+        }
         setEditRateProvider(quote.provider);
         setEditRateError('');
       } catch {
@@ -461,7 +557,7 @@ export const RecordsPage = () => {
     };
 
     void loadEditRate();
-  }, [editing?.originalCurrency, editing?.settledCurrency, editing?.fxMode, editingCanUseFx]);
+  }, [editing?.originalCurrency, editing?.settledCurrency, editing?.fxMode, editingRequiredRatePairs, editingMainRatePairKey]);
 
   const updateDateFrom = (value: string) => {
     setFilters((prev) => {
@@ -498,7 +594,6 @@ export const RecordsPage = () => {
               <option value="all">全部</option>
               <option value="income">收入</option>
               <option value="expense">支出</option>
-              <option value="transfer">转账</option>
             </select>
           </label>
 
@@ -577,14 +672,24 @@ export const RecordsPage = () => {
           </label>
         </div>
 
-        <label className="inline-check">
-          <input
-            type="checkbox"
-            checked={filters.showDeleted}
-            onChange={(event) => setFilters((prev) => ({ ...prev, showDeleted: event.target.checked }))}
-          />
-          <span>显示已删除记录</span>
-        </label>
+        <div className="filter-check-row">
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              checked={filters.showDeleted}
+              onChange={(event) => setFilters((prev) => ({ ...prev, showDeleted: event.target.checked }))}
+            />
+            <span>显示已删除记录</span>
+          </label>
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              checked={filters.showDeletedAccountRecords}
+              onChange={(event) => setFilters((prev) => ({ ...prev, showDeletedAccountRecords: event.target.checked }))}
+            />
+            <span>显示已删除账户的记录</span>
+          </label>
+        </div>
 
         {dateRangeError ? <p className="error-text">{dateRangeError}</p> : null}
 
@@ -606,7 +711,7 @@ export const RecordsPage = () => {
         </div>
       </section>
 
-      {editing ? (
+      {editing && canPortal ? createPortal((
         <div className="modal-overlay" onClick={() => setEditing(null)}>
           <section className="edit-block modal-card" onClick={(event) => event.stopPropagation()}>
           <h3>编辑记录</h3>
@@ -624,7 +729,6 @@ export const RecordsPage = () => {
                 >
                   <option value="income">收入</option>
                   <option value="expense">支出</option>
-                  <option value="transfer">转账</option>
                 </select>
               </label>
 
@@ -640,7 +744,7 @@ export const RecordsPage = () => {
                       ? {
                           ...prev,
                           fromAccountId: accountId,
-                          originalCurrency: '',
+                          originalCurrency: fallbackCurrency,
                           settledCurrency: fallbackCurrency,
                           fxMode: 'api',
                           fxRate: 1,
@@ -648,57 +752,60 @@ export const RecordsPage = () => {
                       : prev));
                     setEditRateError('');
                     setEditRateProvider('');
+                    setEditFxRates({});
+                    setEditFxProviders({});
                   }}
                 >
                   {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
-                      {`${account.name}｜默认 ${formatCurrencyLabel(account.baseCurrency)}｜支持 ${(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}`}
+                      {`${account.name}｜默认 ${account.baseCurrency}｜支持 ${(account.allowedCurrencies ?? [account.baseCurrency]).join(' / ')}`}
                     </option>
                   ))}
                 </select>
               </label>
               {editingFromAccount ? (
-                <p className="hint account-meta">
-                  账户信息：默认入账币种 {formatCurrencyLabel(editingFromAccount.baseCurrency)}；
-                  支持入账币种 {editingSupportedCurrencies.map((item) => formatCurrencyLabel(item)).join('、')}；
-                  透支 {(editingFromAccount.allowOverdraft ?? true) ? '允许' : '不允许'}；
-                  当前余额 {editingCurrentBalanceMinor === null ? '-' : formatMoney(editingCurrentBalanceMinor, editingFromAccount.baseCurrency)}
-                </p>
+                <div className="account-meta-grid">
+                  <div className="account-meta-item">
+                    <span>默认币种</span>
+                    <p className="account-meta-value">{formatCurrencyLabel(editingFromAccount.baseCurrency)}</p>
+                  </div>
+                  <div className="account-meta-item">
+                    <span>支持币种</span>
+                    <div className="account-meta-list">
+                      {editingSupportedCurrencies.map((item) => (
+                        <p key={`edit-meta-${item}`}>{formatCurrencyLabel(item)}</p>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="account-meta-item">
+                    <span>透支</span>
+                    <p className="account-meta-value">{(editingFromAccount.allowOverdraft ?? true) ? '允许' : '不允许'}</p>
+                  </div>
+                  <div className="account-meta-item">
+                    <span>当前余额</span>
+                    <p className="account-meta-value">
+                      {editingCurrentBalanceMinor === null ? '-' : formatMoney(editingCurrentBalanceMinor, editingFromAccount.baseCurrency)}
+                    </p>
+                  </div>
+                </div>
               ) : null}
 
-              {editing.type === 'transfer' ? (
-                <label>
-                  入账账户
-                  <select
-                    value={editing.toAccountId}
-                    onChange={(event) => setEditing((prev) => (prev ? { ...prev, toAccountId: event.target.value } : prev))}
-                  >
-                    <option value="">请选择</option>
-                    {accounts.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name}
+              <label>
+                分类
+                <select
+                  value={editing.categoryId}
+                  onChange={(event) => setEditing((prev) => (prev ? { ...prev, categoryId: event.target.value } : prev))}
+                >
+                  <option value="">请选择</option>
+                  {categories
+                    .filter((category) => category.kind === editing.type)
+                    .map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
                       </option>
                     ))}
-                  </select>
-                </label>
-              ) : (
-                <label>
-                  分类
-                  <select
-                    value={editing.categoryId}
-                    onChange={(event) => setEditing((prev) => (prev ? { ...prev, categoryId: event.target.value } : prev))}
-                  >
-                    <option value="">请选择</option>
-                    {categories
-                      .filter((category) => category.kind === editing.type)
-                      .map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              )}
+                </select>
+              </label>
 
               <label>
                 发生时间（本地时区）
@@ -758,60 +865,115 @@ export const RecordsPage = () => {
               </label>
             </div>
             {!editingAccountReady ? <p className="hint">请先选择出账账户后再设置币种。</p> : null}
-            {editingAccountReady ? (
-              <p className="hint">
-                账户支持入账币种：{editingSupportedCurrencies.map((item) => formatCurrencyLabel(item)).join('、')}
-                ；默认入账币种：{formatCurrencyLabel(editingDefaultSettleCurrency)}
-              </p>
-            ) : null}
+          </section>
+
+          <section className="form-section">
+            <h3>返现与优惠</h3>
+            <div className="form-grid">
+              <label>
+                返现
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editing.cashbackAmount}
+                  onChange={(event) =>
+                    setEditing((prev) => (prev ? { ...prev, cashbackAmount: Number(event.target.value || 0) } : prev))
+                  }
+                />
+              </label>
+              <label>
+                返现币种
+                <select
+                  value={editing.cashbackCurrency}
+                  onChange={(event) => setEditing((prev) => (prev ? { ...prev, cashbackCurrency: event.target.value } : prev))}
+                >
+                  {CURRENCY_OPTIONS.map((currency) => (
+                    <option key={`cb-${currency.code}`} value={currency.code}>
+                      {formatCurrencyLabel(currency.code)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                优惠
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editing.discountAmount}
+                  onChange={(event) =>
+                    setEditing((prev) => (prev ? { ...prev, discountAmount: Number(event.target.value || 0) } : prev))
+                  }
+                />
+              </label>
+              <label>
+                优惠币种
+                <select
+                  value={editing.discountCurrency}
+                  onChange={(event) => setEditing((prev) => (prev ? { ...prev, discountCurrency: event.target.value } : prev))}
+                >
+                  {CURRENCY_OPTIONS.map((currency) => (
+                    <option key={`dc-${currency.code}`} value={currency.code}>
+                      {formatCurrencyLabel(currency.code)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </section>
 
           <section className="form-section">
             <h3>汇率</h3>
-            <div className="form-grid">
-              <div className="fx-mode-wrap">
-                <span className="fx-label">汇率模式</span>
-                <div className="fx-segmented" role="radiogroup" aria-label="汇率模式">
-                  <button
-                    type="button"
-                    className={editing.fxMode === 'api' ? 'fx-option active' : 'fx-option'}
-                    onClick={() => setEditing((prev) => (prev ? { ...prev, fxMode: 'api' } : prev))}
-                    disabled={!editingCanUseFx}
-                  >
-                    自动汇率
-                  </button>
-                  <button
-                    type="button"
-                    className={editing.fxMode === 'manual' ? 'fx-option active' : 'fx-option'}
-                    onClick={() => setEditing((prev) => (prev ? { ...prev, fxMode: 'manual' } : prev))}
-                    disabled={!editingCanUseFx}
-                  >
-                    手动汇率
-                  </button>
-                </div>
+            <div className="fx-mode-wrap">
+              <span className="fx-label">汇率模式</span>
+              <div className="fx-segmented type-segmented" role="radiogroup" aria-label="汇率模式">
+                <button
+                  type="button"
+                  className={editing.fxMode === 'api' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setEditing((prev) => (prev ? { ...prev, fxMode: 'api' } : prev))}
+                  disabled={!editingAccountReady || !editingHasBothCurrencies}
+                >
+                  自动汇率
+                </button>
+                <button
+                  type="button"
+                  className={editing.fxMode === 'manual' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setEditing((prev) => (prev ? { ...prev, fxMode: 'manual' } : prev))}
+                  disabled={!editingAccountReady || !editingHasBothCurrencies}
+                >
+                  手动汇率
+                </button>
               </div>
+            </div>
 
-              <label>
-                汇率
-                <div className="rate-input-wrap">
+            <div className="fx-rates-list">
+              {editingRequiredRatePairs.map((pair) => (
+                <label key={`edit-${pair.key}`} className="fx-rate-row">
+                  <span className="fx-rate-pair">{pair.from} → {pair.to}</span>
                   <input
                     type="number"
-                    step="0.0001"
-                    value={Number.isNaN(editing.fxRate) ? '' : editing.fxRate}
-                    placeholder={editRateLoading ? '正在获取汇率...' : ''}
+                    step="0.00001"
+                    className="fx-rate-input"
+                    value={Number.isFinite(editFxRates[pair.key]) ? editFxRates[pair.key] : ''}
+                    placeholder={editRateLoading && editing.fxMode === 'api' ? '正在获取汇率...' : ''}
                     onChange={(event) =>
-                      setEditing((prev) => (prev ? { ...prev, fxRate: Number(event.target.value || 1) } : prev))
+                      setEditFxRates((prev) => ({ ...prev, [pair.key]: Number(event.target.value || 0) }))
                     }
-                    disabled={!editingCanUseFx || editing.fxMode === 'api' || editRateLoading}
+                    disabled={editing.fxMode === 'api' || editRateLoading}
                   />
-                  {editRateLoading ? <span className="rate-loading-text">正在获取汇率...</span> : null}
-                </div>
-              </label>
+                  <span className="section-extra">
+                    {editing.fxMode === 'api' ? `来源：${(editFxProviders[pair.key] ?? editRateProvider) || '-'}` : ''}
+                  </span>
+                </label>
+              ))}
+              {editingRequiredRatePairs.length === 0 ? (
+                editingAccountReady ? <p className="hint">当前币种组合无需汇率。</p> : null
+              ) : null}
+              {editRateLoading && editing.fxMode === 'api' ? (
+                <p className="hint">正在获取汇率...</p>
+              ) : null}
             </div>
             {!editingAccountReady ? <p className="hint">请先选择出账账户后再计算汇率。</p> : null}
             {editingAccountReady && !editingHasBothCurrencies ? <p className="hint">请选择交易币种和入账币种后自动加载汇率。</p> : null}
-            {editingCanDirectSettle ? <p className="hint">两个币种一致，无需汇率，按实际金额入账。</p> : null}
-            {editRateProvider && editing.fxMode === 'api' && editingCanUseFx ? <p className="hint">汇率来源：{editRateProvider}</p> : null}
             {editRateError ? <p className="error-text">{editRateError}</p> : null}
           </section>
 
@@ -851,11 +1013,11 @@ export const RecordsPage = () => {
           ) : null}
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
 
-      {actualEditing && actualEditingRecord ? (
+      {actualEditing && actualEditingRecord && canPortal ? createPortal((
         <div className="modal-overlay" onClick={() => setActualEditing(null)}>
-          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
             <h3>更正实际入账</h3>
             <div className="record-form">
               <section className="form-section">
@@ -904,7 +1066,7 @@ export const RecordsPage = () => {
             </div>
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
 
       <div className="table-wrap records-desktop-table">
         <table className="records-table">
@@ -915,6 +1077,8 @@ export const RecordsPage = () => {
               <th>分类</th>
               <th>发生时间</th>
               <th>记账金额</th>
+              <th>返现</th>
+              <th>优惠</th>
               <th>入账金额</th>
               <th>备注</th>
               <th>操作</th>
@@ -931,28 +1095,37 @@ export const RecordsPage = () => {
                 <td>{item.transaction.categoryId ? (categoryNameMap[item.transaction.categoryId] ?? '未分类') : '-'}</td>
                 <td>{formatUtcToLocal(item.transaction.occurredAt)}</td>
                 <td>{formatMoney(item.amount.originalAmountMinor, item.amount.originalCurrency)}</td>
+                <td>{(item.amount.cashbackAmountMinor ?? 0) > 0 ? formatMoney(item.amount.cashbackAmountMinor, item.amount.cashbackCurrency) : '-'}</td>
+                <td>{(item.amount.discountAmountMinor ?? 0) > 0 ? formatMoney(item.amount.discountAmountMinor, item.amount.discountCurrency) : '-'}</td>
                 <td>
-                  {formatMoney(item.amount.settledAmountMinor, item.amount.settledCurrency)}
+                  {formatMoney(item.amount.actualSettledAmountMinor ?? item.amount.settledAmountMinor, item.amount.settledCurrency)}
                   {item.amount.isEstimated ? <span className="estimated-tag">预估</span> : null}
                 </td>
-                <td>{item.transaction.note ?? '-'}</td>
+                <td>
+                  {item.transaction.note ?? '-'}
+                </td>
                 <td>
                   {item.transaction.deletedAt ? (
                     <div className="record-actions-inline">
-                      <button type="button" className="restore-btn" onClick={() => void restoreRecord(item.transaction.id)}>
-                        恢复
+                      <button type="button" className="restore-btn icon-btn" title="恢复" onClick={() => void restoreRecord(item.transaction.id)}>
+                        <RotateCcw size={16} />
+                      </button>
+                      <button type="button" className="danger-btn icon-btn" title="永久删除" onClick={() => void hardDeleteRecord(item.transaction.id)}>
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   ) : (
                     <div className="record-actions-inline">
-                      <button type="button" className="ghost-btn" onClick={() => beginEdit(item)}>
-                        编辑
+                      <button type="button" className="ghost-btn icon-btn" title="编辑" onClick={() => beginEdit(item)}>
+                        <FilePenLine size={16} />
                       </button>
-                      <button type="button" className="ghost-btn" onClick={() => beginActualEdit(item)}>
-                        更正入账
-                      </button>
-                      <button type="button" className="danger-btn" onClick={() => void removeRecord(item.transaction.id)}>
-                        删除
+                      {item.amount.isEstimated ? (
+                        <button type="button" className="ghost-btn icon-btn" title="更正入账" onClick={() => beginActualEdit(item)}>
+                          <Check size={16} />
+                        </button>
+                      ) : null}
+                      <button type="button" className="danger-btn icon-btn" title="删除" onClick={() => void removeRecord(item.transaction.id)}>
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   )}
@@ -961,7 +1134,7 @@ export const RecordsPage = () => {
             ))}
             {pagedRecords.length === 0 ? (
               <tr>
-                <td colSpan={8} className="table-empty">没有符合条件的记录。</td>
+                <td colSpan={10} className="table-empty">没有符合条件的记录。</td>
               </tr>
             ) : null}
           </tbody>
@@ -970,41 +1143,66 @@ export const RecordsPage = () => {
 
       <ul className="list records-mobile-list">
         {pagedRecords.map((item) => (
-          <li key={`mobile-${item.transaction.id}`} className={item.transaction.deletedAt ? 'deleted-row' : ''}>
-            <div>
-              <strong>
-                {transactionTypeLabelMap[item.transaction.type]}
-                <span className={item.transaction.deletedAt ? 'deleted-tag' : 'deleted-tag deleted-tag-hidden'}>已删除</span>
+          <li key={`mobile-${item.transaction.id}`} className={`transaction-card ${item.transaction.deletedAt ? 'deleted-row' : ''}`}>
+            <div className="transaction-card-head">
+              <div className="transaction-card-head-left">
+                <strong className="transaction-card-type">
+                  {transactionTypeLabelMap[item.transaction.type]}
+                  <span className={item.transaction.deletedAt ? 'deleted-tag' : 'deleted-tag deleted-tag-hidden'}>已删除</span>
+                </strong>
+                <span className="transaction-card-time">{formatUtcToLocal(item.transaction.occurredAt)}</span>
+              </div>
+              <div className="transaction-card-actions">
+                {item.transaction.deletedAt ? (
+                  <>
+                    <button type="button" className="restore-btn icon-btn" title="恢复" onClick={() => void restoreRecord(item.transaction.id)}>
+                      <RotateCcw size={16} />
+                    </button>
+                    <button type="button" className="danger-btn icon-btn" title="永久删除" onClick={() => void hardDeleteRecord(item.transaction.id)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                  <button type="button" className="ghost-btn icon-btn" title="编辑" onClick={() => beginEdit(item)}>
+                    <FilePenLine size={16} />
+                  </button>
+                  {item.amount.isEstimated ? (
+                    <button type="button" className="ghost-btn icon-btn" title="更正入账" onClick={() => beginActualEdit(item)}>
+                      <Check size={16} />
+                    </button>
+                  ) : null}
+                  <button type="button" className="danger-btn icon-btn" title="删除" onClick={() => void removeRecord(item.transaction.id)}>
+                    <Trash2 size={16} />
+                  </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="transaction-card-amount-row">
+              <strong className="transaction-card-amount">
+                {formatMoney(item.amount.actualSettledAmountMinor ?? item.amount.settledAmountMinor, item.amount.settledCurrency)}
               </strong>
-              <p>账户：{accountNameMap[item.transaction.fromAccountId] ?? '未知账户'}</p>
-              <p>分类：{item.transaction.categoryId ? (categoryNameMap[item.transaction.categoryId] ?? '未分类') : '-'}</p>
-              <p>发生时间：{formatUtcToLocal(item.transaction.occurredAt)}</p>
-              <p>记账金额：{formatMoney(item.amount.originalAmountMinor, item.amount.originalCurrency)}</p>
-              <p>
-                入账金额：{formatMoney(item.amount.settledAmountMinor, item.amount.settledCurrency)}
-                {item.amount.isEstimated ? <span className="estimated-tag">预估</span> : null}
-              </p>
+              {item.amount.isEstimated ? <span className="estimated-tag">预估</span> : null}
+            </div>
+            <div className="transaction-card-metrics">
+              <div className="transaction-metric">
+                <span>记账金额</span>
+                <strong>{formatMoney(item.amount.originalAmountMinor, item.amount.originalCurrency)}</strong>
+              </div>
+              <div className="transaction-metric">
+                <span>优惠</span>
+                <strong>{(item.amount.discountAmountMinor ?? 0) > 0 ? formatMoney(item.amount.discountAmountMinor, item.amount.discountCurrency) : '-'}</strong>
+              </div>
+              <div className="transaction-metric">
+                <span>返现</span>
+                <strong>{(item.amount.cashbackAmountMinor ?? 0) > 0 ? formatMoney(item.amount.cashbackAmountMinor, item.amount.cashbackCurrency) : '-'}</strong>
+              </div>
+            </div>
+            <div className="transaction-card-body">
+              <p>账户：{accountNameMap[item.transaction.fromAccountId] ?? '未知账户'} ｜ 分类：{item.transaction.categoryId ? (categoryNameMap[item.transaction.categoryId] ?? '未分类') : '-'}</p>
               {item.transaction.note ? <p>备注：{item.transaction.note}</p> : null}
             </div>
-            {item.transaction.deletedAt ? (
-              <div className="record-actions-inline">
-                <button type="button" className="restore-btn" onClick={() => void restoreRecord(item.transaction.id)}>
-                  恢复
-                </button>
-              </div>
-            ) : (
-              <div className="record-actions-inline">
-                <button type="button" className="ghost-btn" onClick={() => beginEdit(item)}>
-                  编辑
-                </button>
-                <button type="button" className="ghost-btn" onClick={() => beginActualEdit(item)}>
-                  更正入账
-                </button>
-                <button type="button" className="danger-btn" onClick={() => void removeRecord(item.transaction.id)}>
-                  删除
-                </button>
-              </div>
-            )}
           </li>
         ))}
         {pagedRecords.length === 0 ? <li>没有符合条件的记录。</li> : null}

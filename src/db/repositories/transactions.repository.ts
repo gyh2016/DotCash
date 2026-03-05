@@ -111,4 +111,11 @@ export const transactionsRepository = {
       updatedAt: now,
     });
   },
+
+  async hardDelete(transactionId: string) {
+    await db.transaction('rw', db.transactions, db.transactionAmounts, async () => {
+      await db.transactionAmounts.delete(transactionId);
+      await db.transactions.delete(transactionId);
+    });
+  },
 };

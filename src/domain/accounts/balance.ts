@@ -7,6 +7,7 @@ export const calculateAccountBalanceMinor = (
   return records.reduce((balance, record) => {
     const amount = record.amount.actualSettledAmountMinor ?? record.amount.settledAmountMinor;
     const { transaction } = record;
+    if (transaction.deletedAt !== null) return balance;
 
     if (transaction.type === 'income' && transaction.fromAccountId === accountId) {
       return balance + amount;

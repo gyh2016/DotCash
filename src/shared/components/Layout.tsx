@@ -1,4 +1,4 @@
-import type { PropsWithChildren } from 'react';
+import { useEffect, useMemo, useState, type PropsWithChildren } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 const tabs = [
@@ -10,6 +10,27 @@ const tabs = [
 
 export const Layout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
+  const [now, setNow] = useState(() => new Date());
+  const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const timeText = useMemo(
+    () =>
+      new Intl.DateTimeFormat('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(now),
+    [now],
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const isWideRoute = (
     location.pathname.startsWith('/records')
     || location.pathname.startsWith('/accounts')
@@ -38,6 +59,10 @@ export const Layout = ({ children }: PropsWithChildren) => {
             </NavLink>
           ))}
         </nav>
+        <div className="sidebar-datetime">
+          <p>{timezone}</p>
+          <p>{timeText}</p>
+        </div>
       </aside>
       <main className={isWideRoute ? 'content content-wide' : 'content'}>{children}</main>
       <nav className="mobile-nav">

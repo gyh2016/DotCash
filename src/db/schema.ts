@@ -78,5 +78,35 @@ export class DotCashDB extends Dexie {
           }
         });
       });
+
+    this.version(5)
+      .stores({
+        accounts: 'id, name, deletedAt',
+        categories: 'id, kind, isSystem, isArchived, deletedAt',
+        transactions: 'id, type, fromAccountId, toAccountId, categoryId, occurredAt, deletedAt',
+        transactionAmounts: 'transactionId, settledCurrency, isEstimated',
+      })
+      .upgrade(async (tx) => {
+        await tx.table('transactionAmounts').toCollection().modify((amount: {
+          settledCurrency?: string;
+          cashbackAmountMinor?: number;
+          cashbackCurrency?: string;
+          discountAmountMinor?: number;
+          discountCurrency?: string;
+        }) => {
+          if (typeof amount.cashbackAmountMinor !== 'number') {
+            amount.cashbackAmountMinor = 0;
+          }
+          if (typeof amount.discountAmountMinor !== 'number') {
+            amount.discountAmountMinor = 0;
+          }
+          if (!amount.cashbackCurrency) {
+            amount.cashbackCurrency = amount.settledCurrency ?? 'CNY';
+          }
+          if (!amount.discountCurrency) {
+            amount.discountCurrency = amount.settledCurrency ?? 'CNY';
+          }
+        });
+      });
   }
 }

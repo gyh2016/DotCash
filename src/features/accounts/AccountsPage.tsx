@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { FilePenLine, RotateCcw, Trash2 } from 'lucide-react';
 import { accountsRepository } from '@/db/repositories/accounts.repository';
 import { transactionsRepository } from '@/db/repositories/transactions.repository';
 import { calculateAccountBalanceMinor } from '@/domain/accounts/balance';
@@ -35,18 +36,19 @@ const ACCOUNT_CREATE_DEFAULTS: AccountCreateFormValues = {
 };
 
 const NETWORK_OPTIONS: Array<{ value: AccountNetwork; label: string }> = [
-  { value: 'unionpay', label: '银联' },
-  { value: 'visa', label: 'VISA' },
-  { value: 'mastercard', label: 'Mastercard' },
+  { value: 'unionpay', label: '银联（UnionPay）' },
+  { value: 'visa', label: 'Visa' },
+  { value: 'mastercard', label: '万事达（Mastercard）' },
   { value: 'jcb', label: 'JCB' },
-  { value: 'amex', label: 'AE' },
+  { value: 'amex', label: '美国运通（American Express）' },
+  { value: 'other', label: '其他' },
 ];
-const NETWORK_LOGO_URL: Record<AccountNetwork, string> = {
-  unionpay: 'https://cdn.simpleicons.org/chinaunionpay/CC0000',
-  visa: 'https://cdn.simpleicons.org/visa/1A1F71',
-  mastercard: 'https://cdn.simpleicons.org/mastercard/EB001B',
-  jcb: 'https://cdn.simpleicons.org/jcb/0B4EA2',
-  amex: 'https://cdn.simpleicons.org/americanexpress/2E77BC',
+const NETWORK_LOGO_URL: Partial<Record<AccountNetwork, string>> = {
+  unionpay: '/assets/networks/unionpay.svg',
+  visa: '/assets/networks/visa.svg',
+  mastercard: '/assets/networks/mastercard.svg',
+  jcb: '/assets/networks/jcb.svg',
+  amex: '/assets/networks/amex.svg',
 };
 
 const isCardType = (type: AccountType) => type === 'debit_card' || type === 'credit_card';
@@ -63,6 +65,8 @@ export const AccountsPage = () => {
   const [createError, setCreateError] = useState('');
   const [editError, setEditError] = useState('');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+  const [showDeletedAccounts, setShowDeletedAccounts] = useState(false);
+  const [groupByType, setGroupByType] = useState(true);
   const [savingCreate, setSavingCreate] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
@@ -105,11 +109,27 @@ export const AccountsPage = () => {
   );
 
   const accountRows = useMemo(() => {
-    return accounts.map((account) => {
-      const currentBalanceMinor = calculateAccountBalanceMinor(account.id, records);
-      return { account, currentBalanceMinor, isOverdrawn: currentBalanceMinor < 0 };
-    });
-  }, [accounts, records]);
+    return accounts
+      .filter((account) => (showDeletedAccounts ? true : account.deletedAt === null))
+      .map((account) => {
+        const currentBalanceMinor = calculateAccountBalanceMinor(account.id, records);
+        return { account, currentBalanceMinor, isOverdrawn: currentBalanceMinor < 0 };
+      });
+  }, [accounts, records, showDeletedAccounts]);
+
+  const groupedAccountRows = useMemo(() => {
+    const order: AccountType[] = ['debit_card', 'credit_card', 'ewallet', 'cash', 'other'];
+    if (!groupByType) {
+      return [{ key: 'all', label: '全部账户', rows: accountRows }];
+    }
+    return order
+      .map((type) => ({
+        key: type,
+        label: accountTypeLabelMap[type],
+        rows: accountRows.filter((row) => row.account.type === type),
+      }))
+      .filter((group) => group.rows.length > 0);
+  }, [accountRows, groupByType]);
 
   const editingAccountRow = useMemo(
     () => accountRows.find((row) => row.account.id === editingAccountId) ?? null,
@@ -134,7 +154,7 @@ export const AccountsPage = () => {
 
   const loadData = async () => {
     const [accountList, allRecords] = await Promise.all([
-      accountsRepository.listActive(),
+      accountsRepository.listAll(),
       transactionsRepository.listAll(),
     ]);
     setAccounts(accountList);
@@ -323,13 +343,45 @@ export const AccountsPage = () => {
     }
   });
 
+  const removeAccount = async (accountId: string) => {
+    const ok = window.confirm('确认删除该账户？将同时删除该账户下所有交易记录。');
+    if (!ok) return;
+    await accountsRepository.softDelete(accountId);
+    await loadData();
+  };
+
+  const restoreAccount = async (accountId: string) => {
+    await accountsRepository.restore(accountId);
+    await loadData();
+  };
+
   return (
     <PageCard className="accounts-shell">
       <div className="accounts-page">
         <section className="accounts-toolbar">
-          <h2>账户列表</h2>
+          <div className="accounts-toolbar-main">
+            <h2>账户列表</h2>
+            <div className="accounts-toolbar-filters">
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={showDeletedAccounts}
+                  onChange={(event) => setShowDeletedAccounts(event.target.checked)}
+                />
+                <span>显示已删除账户</span>
+              </label>
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={groupByType}
+                  onChange={(event) => setGroupByType(event.target.checked)}
+                />
+                <span>按账户类型分组</span>
+              </label>
+            </div>
+          </div>
           <div className="accounts-toolbar-actions">
-            <div className="fx-segmented desktop-only" role="radiogroup" aria-label="账户列表视图">
+            <div className="fx-segmented desktop-only accounts-view-switch" role="radiogroup" aria-label="账户列表视图">
               <button
                 type="button"
                 className={viewMode === 'cards' ? 'fx-option active' : 'fx-option'}
@@ -365,20 +417,49 @@ export const AccountsPage = () => {
               </tr>
             </thead>
             <tbody>
-              {accountRows.map(({ account, currentBalanceMinor }) => (
-                <tr key={account.id}>
-                  <td>{account.name}</td>
-                  <td>{accountTypeLabelMap[account.type]}</td>
-                  <td>{formatCurrencyLabel(account.baseCurrency)}</td>
-                  <td>{(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}</td>
-                  <td>{(account.allowOverdraft ?? true) ? '允许' : '不允许'}</td>
-                  <td>{formatMoney(currentBalanceMinor, account.baseCurrency)}</td>
-                  <td>
-                    <button type="button" className="ghost-btn" onClick={() => openEditModal(account)}>
-                      编辑
-                    </button>
-                  </td>
-                </tr>
+              {groupedAccountRows.map((group) => (
+                <Fragment key={`table-group-${group.key}`}>
+                  {groupByType ? (
+                    <tr className="group-header-row">
+                      <td colSpan={7}>{group.label}</td>
+                    </tr>
+                  ) : null}
+                  {group.rows.map(({ account, currentBalanceMinor }) => (
+                    <tr key={account.id} className={account.deletedAt ? 'deleted-row' : ''}>
+                      <td>
+                        {account.name}
+                        {account.deletedAt ? <span className="deleted-tag">已删除</span> : null}
+                      </td>
+                      <td>{accountTypeLabelMap[account.type]}</td>
+                      <td>{formatCurrencyLabel(account.baseCurrency)}</td>
+                      <td>{(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}</td>
+                      <td>{(account.allowOverdraft ?? true) ? '允许' : '不允许'}</td>
+                      <td>{formatMoney(currentBalanceMinor, account.baseCurrency)}</td>
+                      <td>
+                        <div className="record-actions-inline">
+                          {account.deletedAt ? (
+                            <button type="button" className="restore-btn" onClick={() => void restoreAccount(account.id)}>
+                              恢复
+                            </button>
+                          ) : (
+                            <>
+                              <button type="button" className="ghost-btn" onClick={() => openEditModal(account)}>
+                                编辑
+                              </button>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={() => void removeAccount(account.id)}
+                              >
+                                删除
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
               {accountRows.length === 0 ? (
                 <tr>
@@ -389,47 +470,84 @@ export const AccountsPage = () => {
           </table>
         </div>
 
-        <ul className={`accounts-card-grid ${viewMode === 'cards' ? 'desktop-show-cards' : 'desktop-hide-cards'}`}>
-          {accountRows.map(({ account, currentBalanceMinor }) => (
-            <li key={`card-${account.id}`} className="account-credit-card">
-              <div className="account-card-top">
-                <strong className="account-card-name">{account.name}</strong>
-                <span className="account-card-type">{accountTypeLabelMap[account.type]}</span>
-              </div>
-              <p className="account-card-balance">{formatMoney(currentBalanceMinor, account.baseCurrency)}</p>
-              <div className="account-card-meta">
-                <p>默认币种：{formatCurrencyLabel(account.baseCurrency)}</p>
-                <p
-                  className="account-supported-currencies"
-                  title={(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}
-                >
-                  支持币种：{(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}
-                </p>
-                <p>透支：{(account.allowOverdraft ?? true) ? '允许' : '不允许'}</p>
-              </div>
-              {isCardType(account.type) && account.network ? (
-                <div className="account-network-logo">
-                  <img
-                    className="network-logo-image"
-                    src={NETWORK_LOGO_URL[account.network]}
-                    alt={`${account.network} logo`}
-                    loading="lazy"
-                  />
-                </div>
-              ) : null}
-              <button
-                type="button"
-                className="account-edit-icon"
-                aria-label={`编辑${account.name}`}
-                title="编辑"
-                onClick={() => openEditModal(account)}
-              >
-                ✎
-              </button>
-            </li>
+        <div className={`accounts-card-sections ${viewMode === 'cards' ? 'desktop-show-cards' : 'desktop-hide-cards'}`}>
+          {groupedAccountRows.map((group) => (
+            <section key={`card-group-${group.key}`} className="accounts-group-section">
+              {groupByType ? <h3 className="accounts-group-title">{group.label}</h3> : null}
+              <ul className="accounts-card-grid">
+                {group.rows.map(({ account, currentBalanceMinor }) => {
+                  const logoSrc = account.network ? NETWORK_LOGO_URL[account.network] : undefined;
+                  return (
+                    <li key={`card-${account.id}`} className={`account-credit-card ${account.deletedAt ? 'account-credit-card-deleted' : ''}`}>
+                      <div className="account-card-actions">
+                        {account.deletedAt ? (
+                          <button
+                            type="button"
+                            className="account-icon-btn account-icon-btn-restore"
+                            aria-label={`恢复${account.name}`}
+                            title="恢复"
+                            onClick={() => void restoreAccount(account.id)}
+                          >
+                            <RotateCcw size={15} />
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="account-icon-btn"
+                              aria-label={`编辑${account.name}`}
+                              title="编辑"
+                              onClick={() => openEditModal(account)}
+                            >
+                              <FilePenLine size={15} />
+                            </button>
+                            <button
+                              type="button"
+                              className="account-icon-btn account-icon-btn-danger"
+                              aria-label={`删除${account.name}`}
+                              title="删除"
+                              onClick={() => void removeAccount(account.id)}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      <div className="account-card-title-row">
+                        <strong className="account-card-name">{account.name}</strong>
+                        {account.deletedAt ? <span className="account-card-deleted-badge">已删除</span> : null}
+                      </div>
+                      <p className="account-card-type">{accountTypeLabelMap[account.type]}</p>
+                      <p className="account-card-balance">{formatMoney(currentBalanceMinor, account.baseCurrency)}</p>
+                      <div className="account-card-meta">
+                        <p>默认币种：{formatCurrencyLabel(account.baseCurrency)}</p>
+                        <p
+                          className="account-supported-currencies"
+                          title={(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}
+                        >
+                          支持币种：{(account.allowedCurrencies ?? [account.baseCurrency]).map((item) => formatCurrencyLabel(item)).join('、')}
+                        </p>
+                        <p>透支：{(account.allowOverdraft ?? true) ? '允许' : '不允许'}</p>
+                      </div>
+                      {isCardType(account.type) && account.network && account.network !== 'other' && logoSrc ? (
+                        <div className="account-network-logo">
+                          <img
+                            className="network-logo-image"
+                            src={logoSrc}
+                            alt={`${account.network} logo`}
+                            loading="lazy"
+                          />
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+                {group.rows.length === 0 ? <li className="account-empty-card">当前分组没有账户。</li> : null}
+              </ul>
+            </section>
           ))}
-          {accountRows.length === 0 ? <li className="account-empty-card">还没有账户，先创建一个。</li> : null}
-        </ul>
+          {accountRows.length === 0 ? <div className="account-empty-card">还没有账户，先创建一个。</div> : null}
+        </div>
       </div>
 
       {createOpen ? (

@@ -205,7 +205,7 @@ export const StatsPage = () => {
           <PageCard>
             <div className="record-actions-row">
               <h2>收支趋势</h2>
-              <div className="fx-segmented">
+              <div className="fx-segmented stats-trend-segmented">
                 <button type="button" className={granularity === 'day' ? 'fx-option active' : 'fx-option'} onClick={() => setGranularity('day')}>按日</button>
                 <button type="button" className={granularity === 'week' ? 'fx-option active' : 'fx-option'} onClick={() => setGranularity('week')}>按周</button>
                 <button type="button" className={granularity === 'month' ? 'fx-option active' : 'fx-option'} onClick={() => setGranularity('month')}>按月</button>

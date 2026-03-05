@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
+import { Check, FilePenLine, Trash2 } from 'lucide-react';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { accountsRepository } from '@/db/repositories/accounts.repository';
 import { categoriesRepository } from '@/db/repositories/categories.repository';
@@ -194,9 +195,16 @@ export const HomePage = () => {
       const nextOriginalMinor = toMinor(editing.amount);
       const changedAmount = nextOriginalMinor !== fresh.amount.originalAmountMinor;
       const sameCurrency = fresh.amount.originalCurrency === fresh.amount.settledCurrency;
-      const nextSettledMinor = sameCurrency
+      const baseSettledMinor = sameCurrency
         ? nextOriginalMinor
         : Math.round(nextOriginalMinor * (fresh.amount.fxRate ?? 1));
+      const cashbackMinor = (fresh.amount.cashbackCurrency === fresh.amount.settledCurrency)
+        ? (fresh.amount.cashbackAmountMinor ?? 0)
+        : 0;
+      const discountMinor = (fresh.amount.discountCurrency === fresh.amount.settledCurrency)
+        ? (fresh.amount.discountAmountMinor ?? 0)
+        : 0;
+      const nextSettledMinor = Math.max(0, baseSettledMinor - cashbackMinor - discountMinor);
       await transactionsRepository.update(fresh.transaction.id, {
         type: fresh.transaction.type,
         fromAccountId: fresh.transaction.fromAccountId,
@@ -352,28 +360,54 @@ export const HomePage = () => {
         <div className="home-right-stack">
           <PageCard className="home-recent-card">
             <h2>最近交易（10 条）</h2>
-            <ul className="list">
+            <ul className="list home-recent-list">
               {recentRecords.map((item) => (
-                <li key={item.transaction.id}>
-                  <div>
-                    <strong>{accountMap[item.transaction.fromAccountId] ?? '未知账户'}</strong>
-                    <p>
-                      {item.transaction.categoryId ? categoryMap[item.transaction.categoryId] ?? '未分类' : '-'} ｜{' '}
-                      {formatUtcToLocal(item.transaction.occurredAt)}
-                    </p>
-                    <p>记账金额：{formatMoney(item.amount.originalAmountMinor, item.amount.originalCurrency)}</p>
-                    <p>
-                      入账金额：{formatMoney(
+                <li key={item.transaction.id} className="transaction-card">
+                  <div className="transaction-card-head">
+                    <div className="transaction-card-head-left">
+                      <strong className="transaction-card-type">{item.transaction.type === 'income' ? '收入' : '支出'}</strong>
+                      <span className="transaction-card-time">{formatUtcToLocal(item.transaction.occurredAt)}</span>
+                    </div>
+                    <div className="transaction-card-actions">
+                      <button type="button" className="ghost-btn icon-btn" title="编辑" onClick={() => beginEdit(item)}>
+                        <FilePenLine size={16} />
+                      </button>
+                      {item.amount.isEstimated ? (
+                        <button type="button" className="ghost-btn icon-btn" title="更正入账" onClick={() => beginActualEdit(item)}>
+                          <Check size={16} />
+                        </button>
+                      ) : null}
+                      <button type="button" className="danger-btn icon-btn" title="删除" onClick={() => void removeRecord(item.transaction.id)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="transaction-card-amount-row">
+                    <strong className="transaction-card-amount">
+                      {formatMoney(
                         item.amount.actualSettledAmountMinor ?? item.amount.settledAmountMinor,
                         item.amount.settledCurrency,
                       )}
-                      {item.amount.isEstimated ? <span className="estimated-tag">预估</span> : null}
-                    </p>
+                    </strong>
+                    {item.amount.isEstimated ? <span className="estimated-tag">预估</span> : null}
                   </div>
-                  <div className="record-actions-inline">
-                    <button type="button" className="ghost-btn" onClick={() => beginEdit(item)}>编辑</button>
-                    <button type="button" className="ghost-btn" onClick={() => beginActualEdit(item)}>更正入账</button>
-                    <button type="button" className="danger-btn" onClick={() => void removeRecord(item.transaction.id)}>删除</button>
+                  <div className="transaction-card-metrics">
+                    <div className="transaction-metric">
+                      <span>记账金额</span>
+                      <strong>{formatMoney(item.amount.originalAmountMinor, item.amount.originalCurrency)}</strong>
+                    </div>
+                    <div className="transaction-metric">
+                      <span>优惠</span>
+                      <strong>{(item.amount.discountAmountMinor ?? 0) > 0 ? formatMoney(item.amount.discountAmountMinor, item.amount.discountCurrency) : '-'}</strong>
+                    </div>
+                    <div className="transaction-metric">
+                      <span>返现</span>
+                      <strong>{(item.amount.cashbackAmountMinor ?? 0) > 0 ? formatMoney(item.amount.cashbackAmountMinor, item.amount.cashbackCurrency) : '-'}</strong>
+                    </div>
+                  </div>
+                  <div className="transaction-card-body">
+                    <p>账户：{accountMap[item.transaction.fromAccountId] ?? '未知账户'} ｜ 分类：{item.transaction.categoryId ? categoryMap[item.transaction.categoryId] ?? '未分类' : '-'}</p>
+                    {item.transaction.note ? <p>备注：{item.transaction.note}</p> : null}
                   </div>
                 </li>
               ))}
@@ -435,7 +469,7 @@ export const HomePage = () => {
 
       {actualEditing && actualEditingRecord ? (
         <div className="modal-overlay" onClick={() => setActualEditing(null)}>
-          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
             <h3>更正实际入账</h3>
             <div className="record-form">
               <section className="form-section">
