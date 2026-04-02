@@ -126,10 +126,10 @@ export const calculateTransactionSettlement = (
     serviceFeeSettledMinor,
     settledAmountMinor:
       baseSettledAmountMinor
+      + conversionFeeSettledMinor
+      + serviceFeeSettledMinor
       - cashbackSettledMinor
-      - discountSettledMinor
-      - conversionFeeSettledMinor
-      - serviceFeeSettledMinor,
+      - discountSettledMinor,
     mainRate,
   };
 };

@@ -5,3 +5,5 @@ dist
 docs/
 .codex/
 *.tsbuildinfo
+test-results/
+playwright-report/

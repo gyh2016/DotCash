@@ -344,7 +344,7 @@ export const CreateRecordPage = () => {
           : `${formatMoney(serviceFeeOriginalMinor, serviceFeeCurrency)} × ${formatRate(serviceFeeRate)}`;
 
     setFormulaText(
-      `${mainPart} - ${discountPart} - ${cashbackPart} - ${conversionFeePart} - ${serviceFeePart} = ${formatMoney(nextEstimatedMinor, settledCurrencyNow)}`,
+      `${mainPart} + ${conversionFeePart} + ${serviceFeePart} - ${discountPart} - ${cashbackPart} = ${formatMoney(nextEstimatedMinor, settledCurrencyNow)}`,
     );
   }, [
     accountReady, hasBothCurrencies, canDirectSettle, values.amount, values.fxRate, values.cashbackAmount, values.cashbackCurrency,
