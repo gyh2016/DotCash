@@ -1,5 +1,7 @@
 # DotCash
 
+[![CI](https://github.com/gyh2016/DotCash/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gyh2016/DotCash/actions/workflows/ci.yml)
+
 DotCash 是一个基于 React + TypeScript + IndexedDB 的多币种本地记账应用。
 
 ## 功能概览
