@@ -17,11 +17,6 @@ export const calculateAccountBalanceMinor = (
       return balance - amount;
     }
 
-    if (transaction.type === 'transfer') {
-      if (transaction.fromAccountId === accountId) return balance - amount;
-      if (transaction.toAccountId === accountId) return balance + amount;
-    }
-
     return balance;
   }, 0);
 };

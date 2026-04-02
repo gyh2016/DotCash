@@ -3,9 +3,10 @@ import { useForm } from 'react-hook-form';
 import { accountsRepository } from '@/db/repositories/accounts.repository';
 import { categoriesRepository } from '@/db/repositories/categories.repository';
 import { transactionsRepository } from '@/db/repositories/transactions.repository';
+import { calculateTransactionSettlement, collectSettlementSourceCurrencies, feeOriginalMinor, feeSourceCurrency } from '@/domain/transactions/settlement';
 import { fetchAutoRatesToTarget } from '@/domain/fx/provider';
 import { calculateAccountBalanceMinor } from '@/domain/accounts/balance';
-import type { Account, Category, RecordWithAmount, TransactionType } from '@/domain/types';
+import type { Account, Category, FeeMode, RecordWithAmount, TransactionType } from '@/domain/types';
 import { CURRENCY_OPTIONS, formatCurrencyLabel } from '@/shared/constants/currencies';
 import { PageCard } from '@/shared/components/PageCard';
 import { localInputToUtcIso, toLocalInputValue } from '@/shared/utils/datetime';
@@ -22,6 +23,14 @@ interface RecordFormValues {
   cashbackCurrency: string;
   discountAmount: number;
   discountCurrency: string;
+  conversionFeeMode: FeeMode;
+  conversionFeeAmount: number;
+  conversionFeeRate: number;
+  conversionFeeCurrency: string;
+  serviceFeeMode: FeeMode;
+  serviceFeeAmount: number;
+  serviceFeeRate: number;
+  serviceFeeCurrency: string;
   occurredAt: string;
   note: string;
   fxMode: 'api' | 'manual';
@@ -60,6 +69,14 @@ export const CreateRecordPage = () => {
       cashbackCurrency: '',
       discountAmount: 0,
       discountCurrency: '',
+      conversionFeeMode: 'fixed',
+      conversionFeeAmount: 0,
+      conversionFeeRate: 0,
+      conversionFeeCurrency: '',
+      serviceFeeMode: 'fixed',
+      serviceFeeAmount: 0,
+      serviceFeeRate: 0,
+      serviceFeeCurrency: '',
       occurredAt: toLocalInputValue(new Date().toISOString()),
       note: '',
       fxMode: 'api',
@@ -85,8 +102,23 @@ export const CreateRecordPage = () => {
   const settledCurrencyNow = settledCurrency || defaultSettleCurrency;
   const requiredRatePairs = useMemo(() => {
     if (!accountReady || !settledCurrencyNow) return [] as Array<{ from: string; to: string; key: string }>;
-    const fromCandidates = [originalCurrency, values.discountCurrency || settledCurrencyNow, values.cashbackCurrency || settledCurrencyNow]
-      .filter((item): item is string => !!item);
+    const fromCandidates = collectSettlementSourceCurrencies({
+      originalAmountMinor: toMinor(values.amount || 0),
+      originalCurrency,
+      settledCurrency: settledCurrencyNow,
+      cashbackAmountMinor: toMinor(values.cashbackAmount || 0),
+      cashbackCurrency: values.cashbackCurrency || settledCurrencyNow,
+      discountAmountMinor: toMinor(values.discountAmount || 0),
+      discountCurrency: values.discountCurrency || settledCurrencyNow,
+      conversionFeeMode: values.conversionFeeMode,
+      conversionFeeAmountMinor: toMinor(values.conversionFeeAmount || 0),
+      conversionFeeRate: values.conversionFeeRate || 0,
+      conversionFeeCurrency: values.conversionFeeCurrency || settledCurrencyNow,
+      serviceFeeMode: values.serviceFeeMode,
+      serviceFeeAmountMinor: toMinor(values.serviceFeeAmount || 0),
+      serviceFeeRate: values.serviceFeeRate || 0,
+      serviceFeeCurrency: values.serviceFeeCurrency || settledCurrencyNow,
+    });
     const uniqueSources = Array.from(new Set(fromCandidates));
     return uniqueSources
       .filter((source) => source !== settledCurrencyNow)
@@ -133,6 +165,8 @@ export const CreateRecordPage = () => {
     setValue('settledCurrency', defaultSettleCurrency);
     setValue('cashbackCurrency', defaultSettleCurrency);
     setValue('discountCurrency', defaultSettleCurrency);
+    setValue('conversionFeeCurrency', defaultSettleCurrency);
+    setValue('serviceFeeCurrency', defaultSettleCurrency);
     setValue('fxRate', 1);
     setRateError('');
     setRateProvider('');
@@ -148,15 +182,19 @@ export const CreateRecordPage = () => {
       setValue('settledCurrency', originalCurrency);
       if (!values.cashbackCurrency) setValue('cashbackCurrency', originalCurrency);
       if (!values.discountCurrency) setValue('discountCurrency', originalCurrency);
+      if (!values.conversionFeeCurrency) setValue('conversionFeeCurrency', originalCurrency);
+      if (!values.serviceFeeCurrency) setValue('serviceFeeCurrency', originalCurrency);
       setValue('fxRate', 1);
     }
-  }, [canDirectSettle, originalCurrency, setValue, values.cashbackCurrency, values.discountCurrency]);
+  }, [canDirectSettle, originalCurrency, setValue, values.cashbackCurrency, values.discountCurrency, values.conversionFeeCurrency, values.serviceFeeCurrency]);
 
   useEffect(() => {
     if (!settledCurrencyNow) return;
     if (!values.cashbackCurrency) setValue('cashbackCurrency', settledCurrencyNow);
     if (!values.discountCurrency) setValue('discountCurrency', settledCurrencyNow);
-  }, [settledCurrencyNow, setValue, values.cashbackCurrency, values.discountCurrency]);
+    if (!values.conversionFeeCurrency) setValue('conversionFeeCurrency', settledCurrencyNow);
+    if (!values.serviceFeeCurrency) setValue('serviceFeeCurrency', settledCurrencyNow);
+  }, [settledCurrencyNow, setValue, values.cashbackCurrency, values.discountCurrency, values.conversionFeeCurrency, values.serviceFeeCurrency]);
 
   useEffect(() => {
     const loadRate = async () => {
@@ -211,47 +249,75 @@ export const CreateRecordPage = () => {
       if (from === to) return 1;
       return fxRates[toPairKey(from, to)];
     };
-    const amountMinor = toMinor(values.amount);
-    const mainRate = canDirectSettle ? 1 : getRate(values.originalCurrency, settledCurrencyNow);
-    if (!mainRate || mainRate <= 0) {
-      setEstimatedMinor(null);
-      setFormulaText('');
-      return;
-    }
     if (fxMode === 'api' && isRateLoading) {
       setEstimatedMinor(null);
       setFormulaText('');
       return;
     }
-    const baseMinor = Math.round(amountMinor * mainRate);
+    const amountMinor = toMinor(values.amount);
+    const settlement = calculateTransactionSettlement({
+      originalAmountMinor: amountMinor,
+      originalCurrency: values.originalCurrency,
+      settledCurrency: settledCurrencyNow,
+      cashbackAmountMinor: toMinor(values.cashbackAmount || 0),
+      cashbackCurrency: values.cashbackCurrency || settledCurrencyNow,
+      discountAmountMinor: toMinor(values.discountAmount || 0),
+      discountCurrency: values.discountCurrency || settledCurrencyNow,
+      conversionFeeMode: values.conversionFeeMode,
+      conversionFeeAmountMinor: toMinor(values.conversionFeeAmount || 0),
+      conversionFeeRate: values.conversionFeeRate || 0,
+      conversionFeeCurrency: values.conversionFeeCurrency || settledCurrencyNow,
+      serviceFeeMode: values.serviceFeeMode,
+      serviceFeeAmountMinor: toMinor(values.serviceFeeAmount || 0),
+      serviceFeeRate: values.serviceFeeRate || 0,
+      serviceFeeCurrency: values.serviceFeeCurrency || settledCurrencyNow,
+    }, getRate);
+    if (!settlement) {
+      setEstimatedMinor(null);
+      setFormulaText('');
+      return;
+    }
+
+    const nextEstimatedMinor = settlement.settledAmountMinor;
+    setEstimatedMinor(nextEstimatedMinor);
+    setValue('fxRate', settlement.mainRate);
 
     const discountOriginalMinor = toMinor(values.discountAmount || 0);
-    const discountCurrency = values.discountCurrency || settledCurrencyNow;
-    const discountRate = getRate(discountCurrency, settledCurrencyNow);
-    if (!discountRate || discountRate <= 0) {
-      setEstimatedMinor(null);
-      setFormulaText('');
-      return;
-    }
-    const discountMinor = Math.round(discountOriginalMinor * discountRate);
-
     const cashbackOriginalMinor = toMinor(values.cashbackAmount || 0);
+    const conversionFeeOriginalMinor = feeOriginalMinor(
+      values.conversionFeeMode,
+      amountMinor,
+      toMinor(values.conversionFeeAmount || 0),
+      values.conversionFeeRate || 0,
+    );
+    const serviceFeeOriginalMinor = feeOriginalMinor(
+      values.serviceFeeMode,
+      amountMinor,
+      toMinor(values.serviceFeeAmount || 0),
+      values.serviceFeeRate || 0,
+    );
+    const discountCurrency = values.discountCurrency || settledCurrencyNow;
     const cashbackCurrency = values.cashbackCurrency || settledCurrencyNow;
-    const cashbackRate = getRate(cashbackCurrency, settledCurrencyNow);
-    if (!cashbackRate || cashbackRate <= 0) {
-      setEstimatedMinor(null);
-      setFormulaText('');
-      return;
-    }
-    const cashbackMinor = Math.round(cashbackOriginalMinor * cashbackRate);
+    const conversionFeeCurrency = feeSourceCurrency(
+      values.conversionFeeMode,
+      values.originalCurrency,
+      values.conversionFeeCurrency || settledCurrencyNow,
+      settledCurrencyNow,
+    );
+    const serviceFeeCurrency = feeSourceCurrency(
+      values.serviceFeeMode,
+      values.originalCurrency,
+      values.serviceFeeCurrency || settledCurrencyNow,
+      settledCurrencyNow,
+    );
+    const discountRate = getRate(discountCurrency, settledCurrencyNow) ?? 1;
+    const cashbackRate = getRate(cashbackCurrency, settledCurrencyNow) ?? 1;
+    const conversionFeeRate = getRate(conversionFeeCurrency, settledCurrencyNow) ?? 1;
+    const serviceFeeRate = getRate(serviceFeeCurrency, settledCurrencyNow) ?? 1;
 
-    const nextEstimatedMinor = baseMinor - discountMinor - cashbackMinor;
-    setEstimatedMinor(nextEstimatedMinor);
-    setValue('fxRate', mainRate);
-
-    const mainPart = mainRate === 1
+    const mainPart = settlement.mainRate === 1
       ? `${formatMoney(amountMinor, values.originalCurrency)}`
-      : `${formatMoney(amountMinor, values.originalCurrency)} × ${formatRate(mainRate)}`;
+      : `${formatMoney(amountMinor, values.originalCurrency)} × ${formatRate(settlement.mainRate)}`;
     const discountPart = discountOriginalMinor <= 0
       ? `0 ${settledCurrencyNow}`
       : discountCurrency === settledCurrencyNow
@@ -262,46 +328,67 @@ export const CreateRecordPage = () => {
       : cashbackCurrency === settledCurrencyNow
         ? `${formatMoney(cashbackOriginalMinor, settledCurrencyNow)}`
         : `${formatMoney(cashbackOriginalMinor, cashbackCurrency)} × ${formatRate(cashbackRate)}`;
+    const conversionFeePart = conversionFeeOriginalMinor <= 0
+      ? `0 ${settledCurrencyNow}`
+      : values.conversionFeeMode === 'rate'
+        ? `${formatMoney(amountMinor, values.originalCurrency)} × ${values.conversionFeeRate}%${conversionFeeCurrency === settledCurrencyNow ? '' : ` × ${formatRate(conversionFeeRate)}`}`
+        : conversionFeeCurrency === settledCurrencyNow
+          ? `${formatMoney(conversionFeeOriginalMinor, settledCurrencyNow)}`
+          : `${formatMoney(conversionFeeOriginalMinor, conversionFeeCurrency)} × ${formatRate(conversionFeeRate)}`;
+    const serviceFeePart = serviceFeeOriginalMinor <= 0
+      ? `0 ${settledCurrencyNow}`
+      : values.serviceFeeMode === 'rate'
+        ? `${formatMoney(amountMinor, values.originalCurrency)} × ${values.serviceFeeRate}%${serviceFeeCurrency === settledCurrencyNow ? '' : ` × ${formatRate(serviceFeeRate)}`}`
+        : serviceFeeCurrency === settledCurrencyNow
+          ? `${formatMoney(serviceFeeOriginalMinor, settledCurrencyNow)}`
+          : `${formatMoney(serviceFeeOriginalMinor, serviceFeeCurrency)} × ${formatRate(serviceFeeRate)}`;
 
     setFormulaText(
-      `${mainPart} - ${discountPart} - ${cashbackPart} = ${formatMoney(nextEstimatedMinor, settledCurrencyNow)}`,
+      `${mainPart} - ${discountPart} - ${cashbackPart} - ${conversionFeePart} - ${serviceFeePart} = ${formatMoney(nextEstimatedMinor, settledCurrencyNow)}`,
     );
   }, [
     accountReady, hasBothCurrencies, canDirectSettle, values.amount, values.fxRate, values.cashbackAmount, values.cashbackCurrency,
-    values.discountAmount, values.discountCurrency, values.originalCurrency, fxMode, isRateLoading, settledCurrencyNow, fxRates, setValue,
+    values.discountAmount, values.discountCurrency, values.originalCurrency, values.conversionFeeMode, values.conversionFeeAmount,
+    values.conversionFeeRate, values.conversionFeeCurrency, values.serviceFeeMode, values.serviceFeeAmount, values.serviceFeeRate,
+    values.serviceFeeCurrency, fxMode, isRateLoading, settledCurrencyNow, fxRates, setValue,
   ]);
 
   const onSubmit = handleSubmit(async (submitValues) => {
-    const amountMinor = toMinor(submitValues.amount);
     const getRate = (from: string, to: string) => {
       if (from === to) return 1;
       return fxRates[toPairKey(from, to)];
     };
-    const mainRate = canDirectSettle ? 1 : getRate(submitValues.originalCurrency, submitValues.settledCurrency);
-    if (!mainRate || mainRate <= 0) {
+    const amountMinor = toMinor(submitValues.amount);
+    const settlement = calculateTransactionSettlement({
+      originalAmountMinor: amountMinor,
+      originalCurrency: submitValues.originalCurrency,
+      settledCurrency: submitValues.settledCurrency,
+      cashbackAmountMinor: toMinor(submitValues.cashbackAmount || 0),
+      cashbackCurrency: submitValues.cashbackCurrency || submitValues.settledCurrency,
+      discountAmountMinor: toMinor(submitValues.discountAmount || 0),
+      discountCurrency: submitValues.discountCurrency || submitValues.settledCurrency,
+      conversionFeeMode: submitValues.conversionFeeMode,
+      conversionFeeAmountMinor: toMinor(submitValues.conversionFeeAmount || 0),
+      conversionFeeRate: submitValues.conversionFeeRate || 0,
+      conversionFeeCurrency: submitValues.conversionFeeCurrency || submitValues.settledCurrency,
+      serviceFeeMode: submitValues.serviceFeeMode,
+      serviceFeeAmountMinor: toMinor(submitValues.serviceFeeAmount || 0),
+      serviceFeeRate: submitValues.serviceFeeRate || 0,
+      serviceFeeCurrency: submitValues.serviceFeeCurrency || submitValues.settledCurrency,
+    }, getRate);
+    if (!settlement) {
       setRateError('存在未配置的汇率，请补全后再保存。');
       return;
     }
-    const discountRate = getRate(submitValues.discountCurrency || submitValues.settledCurrency, submitValues.settledCurrency);
-    const cashbackRate = getRate(submitValues.cashbackCurrency || submitValues.settledCurrency, submitValues.settledCurrency);
-    if (!discountRate || discountRate <= 0 || !cashbackRate || cashbackRate <= 0) {
-      setRateError('存在未配置的汇率，请补全后再保存。');
-      return;
-    }
-
-    const baseSettledAmountMinor = Math.round(amountMinor * mainRate);
-    const cashbackSettledMinor = Math.round(toMinor(submitValues.cashbackAmount || 0) * cashbackRate);
-    const discountSettledMinor = Math.round(toMinor(submitValues.discountAmount || 0) * discountRate);
-    const settledAmountMinor = baseSettledAmountMinor - cashbackSettledMinor - discountSettledMinor;
     const involvedRates = requiredRatePairs
       .map((pair) => fxRates[pair.key])
       .filter((rate): rate is number => Number.isFinite(rate));
-    const hasDifferentRate = involvedRates.some((rate) => Math.abs(rate - mainRate) > 0.0000001);
+    const hasDifferentRate = involvedRates.some((rate) => Math.abs(rate - settlement.mainRate) > 0.0000001);
 
     if (submitValues.type === 'expense' && fromAccount && !(fromAccount.allowOverdraft ?? true)) {
       const latestRecords = await transactionsRepository.listAll();
       const latestBalanceMinor = calculateAccountBalanceMinor(fromAccount.id, latestRecords);
-      const latestProjectedMinor = latestBalanceMinor - settledAmountMinor;
+      const latestProjectedMinor = latestBalanceMinor - settlement.settledAmountMinor;
       if (latestProjectedMinor < 0) {
         setBalanceError(`余额不足：当前余额 ${formatMoney(latestBalanceMinor, fromAccount.baseCurrency)}。`);
         return;
@@ -320,15 +407,27 @@ export const CreateRecordPage = () => {
       amount: {
         originalAmountMinor: amountMinor,
         originalCurrency: submitValues.originalCurrency,
-        settledAmountMinor,
+        settledAmountMinor: settlement.settledAmountMinor,
         settledCurrency: submitValues.settledCurrency,
         cashbackAmountMinor: toMinor(submitValues.cashbackAmount || 0),
         cashbackCurrency: submitValues.cashbackCurrency || submitValues.settledCurrency,
         discountAmountMinor: toMinor(submitValues.discountAmount || 0),
         discountCurrency: submitValues.discountCurrency || submitValues.settledCurrency,
+        conversionFeeMode: submitValues.conversionFeeMode,
+        conversionFeeAmountMinor: toMinor(submitValues.conversionFeeAmount || 0),
+        conversionFeeRate: submitValues.conversionFeeRate || 0,
+        conversionFeeCurrency: submitValues.conversionFeeMode === 'fixed'
+          ? (submitValues.conversionFeeCurrency || submitValues.settledCurrency)
+          : null,
+        serviceFeeMode: submitValues.serviceFeeMode,
+        serviceFeeAmountMinor: toMinor(submitValues.serviceFeeAmount || 0),
+        serviceFeeRate: submitValues.serviceFeeRate || 0,
+        serviceFeeCurrency: submitValues.serviceFeeMode === 'fixed'
+          ? (submitValues.serviceFeeCurrency || submitValues.settledCurrency)
+          : null,
         actualSettledAmountMinor: null,
         isEstimated: !canDirectSettle || hasDifferentRate,
-        fxRate: mainRate,
+        fxRate: settlement.mainRate,
         fxSource: canDirectSettle ? null : submitValues.fxMode,
         fxProvider: canDirectSettle ? null : submitValues.fxMode === 'api' ? ((fxProviders[mainRatePairKey] ?? rateProvider) || 'auto') : 'manual',
         fxTimestamp: new Date().toISOString(),
@@ -350,6 +449,14 @@ export const CreateRecordPage = () => {
       cashbackCurrency: '',
       discountAmount: 0,
       discountCurrency: '',
+      conversionFeeMode: 'fixed',
+      conversionFeeAmount: 0,
+      conversionFeeRate: 0,
+      conversionFeeCurrency: '',
+      serviceFeeMode: 'fixed',
+      serviceFeeAmount: 0,
+      serviceFeeRate: 0,
+      serviceFeeCurrency: '',
       occurredAt: toLocalInputValue(new Date().toISOString()),
       note: '',
       fxMode: 'api',
@@ -514,6 +621,110 @@ export const CreateRecordPage = () => {
         </section>
 
         <section className="form-section">
+          <h3>费用</h3>
+          <div className="form-grid">
+            <div className="form-control">
+              <span className="fx-label">货币转换费模式</span>
+              <div className="fx-segmented type-segmented" role="radiogroup" aria-label="货币转换费模式">
+                <button
+                  type="button"
+                  className={values.conversionFeeMode === 'fixed' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setValue('conversionFeeMode', 'fixed')}
+                >
+                  固定金额
+                </button>
+                <button
+                  type="button"
+                  className={values.conversionFeeMode === 'rate' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setValue('conversionFeeMode', 'rate')}
+                >
+                  比例
+                </button>
+              </div>
+            </div>
+            <label>
+              货币转换费
+              <div className="input-suffix-wrap">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={values.conversionFeeMode === 'rate' ? values.conversionFeeRate : values.conversionFeeAmount}
+                  onChange={(event) => {
+                    const next = Number(event.target.value || 0);
+                    if (values.conversionFeeMode === 'rate') {
+                      setValue('conversionFeeRate', next);
+                      return;
+                    }
+                    setValue('conversionFeeAmount', next);
+                  }}
+                />
+                {values.conversionFeeMode === 'rate' ? <span className="input-suffix">%</span> : null}
+              </div>
+            </label>
+            <label>
+              货币转换费币种
+              <select {...register('conversionFeeCurrency')} disabled={!accountReady || values.conversionFeeMode === 'rate'}>
+                {CURRENCY_OPTIONS.map((currency) => (
+                  <option key={`conversion-fee-${currency.code}`} value={currency.code}>
+                    {formatCurrencyLabel(currency.code)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="form-control">
+              <span className="fx-label">手续费模式</span>
+              <div className="fx-segmented type-segmented" role="radiogroup" aria-label="手续费模式">
+                <button
+                  type="button"
+                  className={values.serviceFeeMode === 'fixed' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setValue('serviceFeeMode', 'fixed')}
+                >
+                  固定金额
+                </button>
+                <button
+                  type="button"
+                  className={values.serviceFeeMode === 'rate' ? 'fx-option active' : 'fx-option'}
+                  onClick={() => setValue('serviceFeeMode', 'rate')}
+                >
+                  比例
+                </button>
+              </div>
+            </div>
+            <label>
+              手续费
+              <div className="input-suffix-wrap">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={values.serviceFeeMode === 'rate' ? values.serviceFeeRate : values.serviceFeeAmount}
+                  onChange={(event) => {
+                    const next = Number(event.target.value || 0);
+                    if (values.serviceFeeMode === 'rate') {
+                      setValue('serviceFeeRate', next);
+                      return;
+                    }
+                    setValue('serviceFeeAmount', next);
+                  }}
+                />
+                {values.serviceFeeMode === 'rate' ? <span className="input-suffix">%</span> : null}
+              </div>
+            </label>
+            <label>
+              手续费币种
+              <select {...register('serviceFeeCurrency')} disabled={!accountReady || values.serviceFeeMode === 'rate'}>
+                {CURRENCY_OPTIONS.map((currency) => (
+                  <option key={`service-fee-${currency.code}`} value={currency.code}>
+                    {formatCurrencyLabel(currency.code)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="hint">比例模式按记账金额计算，固定金额模式按所选币种折算到入账币种。</p>
+        </section>
+
+        <section className="form-section">
           <div className="section-title-row">
             <h3>汇率</h3>
           </div>
@@ -600,6 +811,8 @@ export const CreateRecordPage = () => {
         <input type="hidden" {...register('type')} />
         <input type="hidden" {...register('fxMode')} />
         <input type="hidden" {...register('fxRate', { valueAsNumber: true })} />
+        <input type="hidden" {...register('conversionFeeMode')} />
+        <input type="hidden" {...register('serviceFeeMode')} />
         <p className="hint quick-save-hint">小提示：填写完成后按回车键可快速保存。</p>
         <button type="submit" disabled={isInsufficientBalance}>保存记录</button>
       </form>

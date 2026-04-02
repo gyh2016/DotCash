@@ -955,6 +955,25 @@ button:disabled {
   color: #0a66d9;
 }
 
+.input-suffix-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.input-suffix-wrap input {
+  padding-right: 2rem;
+}
+
+.input-suffix {
+  position: absolute;
+  right: 0.72rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #6c6c70;
+  font-size: 0.88rem;
+  pointer-events: none;
+}
+
 .quick-save-hint {
   margin-top: -0.2rem;
 }

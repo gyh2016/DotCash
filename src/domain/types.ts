@@ -1,8 +1,9 @@
 export type AccountType = 'cash' | 'debit_card' | 'credit_card' | 'ewallet' | 'other';
 export type AccountNetwork = 'unionpay' | 'visa' | 'mastercard' | 'jcb' | 'amex' | 'other';
-export type TransactionType = 'income' | 'expense' | 'transfer';
+export type TransactionType = 'income' | 'expense';
 export type CategoryKind = 'income' | 'expense';
 export type FxSource = 'api' | 'manual';
+export type FeeMode = 'fixed' | 'rate';
 
 export interface Account {
   id: string;
@@ -51,6 +52,14 @@ export interface TransactionAmount {
   cashbackCurrency: string;
   discountAmountMinor: number;
   discountCurrency: string;
+  conversionFeeMode: FeeMode;
+  conversionFeeAmountMinor: number;
+  conversionFeeRate: number;
+  conversionFeeCurrency: string | null;
+  serviceFeeMode: FeeMode;
+  serviceFeeAmountMinor: number;
+  serviceFeeRate: number;
+  serviceFeeCurrency: string | null;
   actualSettledAmountMinor: number | null;
   isEstimated: boolean;
   fxRate: number | null;

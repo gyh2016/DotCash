@@ -6,6 +6,7 @@ import { accountsRepository } from '@/db/repositories/accounts.repository';
 import { categoriesRepository } from '@/db/repositories/categories.repository';
 import { transactionsRepository } from '@/db/repositories/transactions.repository';
 import { calculateAccountBalanceMinor } from '@/domain/accounts/balance';
+import { calculateTransactionSettlement } from '@/domain/transactions/settlement';
 import type { Account, Category, RecordWithAmount } from '@/domain/types';
 import { formatCurrencyLabel } from '@/shared/constants/currencies';
 import { PageCard } from '@/shared/components/PageCard';
@@ -194,17 +195,34 @@ export const HomePage = () => {
       }
       const nextOriginalMinor = toMinor(editing.amount);
       const changedAmount = nextOriginalMinor !== fresh.amount.originalAmountMinor;
-      const sameCurrency = fresh.amount.originalCurrency === fresh.amount.settledCurrency;
-      const baseSettledMinor = sameCurrency
-        ? nextOriginalMinor
-        : Math.round(nextOriginalMinor * (fresh.amount.fxRate ?? 1));
-      const cashbackMinor = (fresh.amount.cashbackCurrency === fresh.amount.settledCurrency)
-        ? (fresh.amount.cashbackAmountMinor ?? 0)
-        : 0;
-      const discountMinor = (fresh.amount.discountCurrency === fresh.amount.settledCurrency)
-        ? (fresh.amount.discountAmountMinor ?? 0)
-        : 0;
-      const nextSettledMinor = Math.max(0, baseSettledMinor - cashbackMinor - discountMinor);
+      const getRate = (from: string, to: string) => {
+        if (from === to) return 1;
+        if (from === fresh.amount.originalCurrency && to === fresh.amount.settledCurrency) {
+          return fresh.amount.fxRate ?? 1;
+        }
+        return undefined;
+      };
+      const settlement = calculateTransactionSettlement({
+        originalAmountMinor: nextOriginalMinor,
+        originalCurrency: fresh.amount.originalCurrency,
+        settledCurrency: fresh.amount.settledCurrency,
+        cashbackAmountMinor: fresh.amount.cashbackAmountMinor ?? 0,
+        cashbackCurrency: fresh.amount.cashbackCurrency,
+        discountAmountMinor: fresh.amount.discountAmountMinor ?? 0,
+        discountCurrency: fresh.amount.discountCurrency,
+        conversionFeeMode: fresh.amount.conversionFeeMode ?? 'fixed',
+        conversionFeeAmountMinor: fresh.amount.conversionFeeAmountMinor ?? 0,
+        conversionFeeRate: fresh.amount.conversionFeeRate ?? 0,
+        conversionFeeCurrency: fresh.amount.conversionFeeCurrency,
+        serviceFeeMode: fresh.amount.serviceFeeMode ?? 'fixed',
+        serviceFeeAmountMinor: fresh.amount.serviceFeeAmountMinor ?? 0,
+        serviceFeeRate: fresh.amount.serviceFeeRate ?? 0,
+        serviceFeeCurrency: fresh.amount.serviceFeeCurrency,
+      }, getRate);
+      if (!settlement) {
+        setEditError('无法根据当前汇率重新计算入账金额。');
+        return;
+      }
       await transactionsRepository.update(fresh.transaction.id, {
         type: fresh.transaction.type,
         fromAccountId: fresh.transaction.fromAccountId,
@@ -215,7 +233,7 @@ export const HomePage = () => {
         amount: {
           ...fresh.amount,
           originalAmountMinor: nextOriginalMinor,
-          settledAmountMinor: nextSettledMinor,
+          settledAmountMinor: settlement.settledAmountMinor,
           actualSettledAmountMinor: changedAmount ? null : fresh.amount.actualSettledAmountMinor,
           isEstimated: changedAmount ? true : fresh.amount.isEstimated,
         },
@@ -407,6 +425,26 @@ export const HomePage = () => {
                   </div>
                   <div className="transaction-card-body">
                     <p>账户：{accountMap[item.transaction.fromAccountId] ?? '未知账户'} ｜ 分类：{item.transaction.categoryId ? categoryMap[item.transaction.categoryId] ?? '未分类' : '-'}</p>
+                    {(item.amount.conversionFeeMode === 'rate' && (item.amount.conversionFeeRate ?? 0) > 0)
+                      || (item.amount.conversionFeeMode !== 'rate' && (item.amount.conversionFeeAmountMinor ?? 0) > 0)
+                      ? (
+                        <p>
+                          转换费：
+                          {item.amount.conversionFeeMode === 'rate'
+                            ? `${item.amount.conversionFeeRate}%`
+                            : formatMoney(item.amount.conversionFeeAmountMinor, item.amount.conversionFeeCurrency ?? item.amount.settledCurrency)}
+                        </p>
+                      ) : null}
+                    {(item.amount.serviceFeeMode === 'rate' && (item.amount.serviceFeeRate ?? 0) > 0)
+                      || (item.amount.serviceFeeMode !== 'rate' && (item.amount.serviceFeeAmountMinor ?? 0) > 0)
+                      ? (
+                        <p>
+                          手续费：
+                          {item.amount.serviceFeeMode === 'rate'
+                            ? `${item.amount.serviceFeeRate}%`
+                            : formatMoney(item.amount.serviceFeeAmountMinor, item.amount.serviceFeeCurrency ?? item.amount.settledCurrency)}
+                        </p>
+                      ) : null}
                     {item.transaction.note ? <p>备注：{item.transaction.note}</p> : null}
                   </div>
                 </li>

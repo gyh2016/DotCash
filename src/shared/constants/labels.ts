@@ -11,5 +11,4 @@ export const accountTypeLabelMap: Record<AccountType, string> = {
 export const transactionTypeLabelMap: Record<TransactionType, string> = {
   income: '收入',
   expense: '支出',
-  transfer: '转账',
 };

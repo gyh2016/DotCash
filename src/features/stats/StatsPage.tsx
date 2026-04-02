@@ -130,10 +130,6 @@ export const StatsPage = () => {
         const amount = record.amount.actualSettledAmountMinor ?? record.amount.settledAmountMinor;
         if (record.transaction.type === 'income' && record.transaction.fromAccountId === account.id) inflow += amount;
         if (record.transaction.type === 'expense' && record.transaction.fromAccountId === account.id) outflow += amount;
-        if (record.transaction.type === 'transfer') {
-          if (record.transaction.toAccountId === account.id) inflow += amount;
-          if (record.transaction.fromAccountId === account.id) outflow += amount;
-        }
       }
       return { accountId: account.id, accountName: account.name, inflow, outflow, net: inflow - outflow };
     });
@@ -149,13 +145,8 @@ export const StatsPage = () => {
       const amount = record.amount.actualSettledAmountMinor ?? record.amount.settledAmountMinor;
       if (record.transaction.type === 'income') {
         running.set(record.transaction.fromAccountId, (running.get(record.transaction.fromAccountId) ?? 0) + amount);
-      } else if (record.transaction.type === 'expense') {
-        running.set(record.transaction.fromAccountId, (running.get(record.transaction.fromAccountId) ?? 0) - amount);
       } else {
         running.set(record.transaction.fromAccountId, (running.get(record.transaction.fromAccountId) ?? 0) - amount);
-        if (record.transaction.toAccountId) {
-          running.set(record.transaction.toAccountId, (running.get(record.transaction.toAccountId) ?? 0) + amount);
-        }
       }
       byDay.set(dayKey, Object.fromEntries(Array.from(running.entries()).map(([id, value]) => [id, Number((value / 100).toFixed(2))])));
     }

@@ -108,5 +108,63 @@ export class DotCashDB extends Dexie {
           }
         });
       });
+
+    this.version(6)
+      .stores({
+        accounts: 'id, name, deletedAt',
+        categories: 'id, kind, isSystem, isArchived, deletedAt',
+        transactions: 'id, type, fromAccountId, toAccountId, categoryId, occurredAt, deletedAt',
+        transactionAmounts: 'transactionId, settledCurrency, isEstimated',
+      })
+      .upgrade(async (tx) => {
+        await tx.table('transactionAmounts').toCollection().modify((amount: {
+          settledCurrency?: string;
+          conversionFeeMode?: 'fixed' | 'rate';
+          conversionFeeAmountMinor?: number;
+          conversionFeeRate?: number;
+          conversionFeeCurrency?: string | null;
+          serviceFeeMode?: 'fixed' | 'rate';
+          serviceFeeAmountMinor?: number;
+          serviceFeeRate?: number;
+          serviceFeeCurrency?: string | null;
+        }) => {
+          if (!amount.conversionFeeMode) {
+            amount.conversionFeeMode = 'fixed';
+          }
+          if (typeof amount.conversionFeeAmountMinor !== 'number') {
+            amount.conversionFeeAmountMinor = 0;
+          }
+          if (typeof amount.conversionFeeRate !== 'number') {
+            amount.conversionFeeRate = 0;
+          }
+          if (typeof amount.conversionFeeCurrency === 'undefined') {
+            amount.conversionFeeCurrency = amount.settledCurrency ?? 'CNY';
+          }
+          if (!amount.serviceFeeMode) {
+            amount.serviceFeeMode = 'fixed';
+          }
+          if (typeof amount.serviceFeeAmountMinor !== 'number') {
+            amount.serviceFeeAmountMinor = 0;
+          }
+          if (typeof amount.serviceFeeRate !== 'number') {
+            amount.serviceFeeRate = 0;
+          }
+          if (typeof amount.serviceFeeCurrency === 'undefined') {
+            amount.serviceFeeCurrency = amount.settledCurrency ?? 'CNY';
+          }
+        });
+
+        await tx.table('transactions').toCollection().modify((transaction: {
+          type?: string;
+          deletedAt?: string | null;
+          updatedAt?: string;
+        }) => {
+          if (transaction.type === 'transfer') {
+            const now = new Date().toISOString();
+            transaction.deletedAt = transaction.deletedAt ?? now;
+            transaction.updatedAt = now;
+          }
+        });
+      });
   }
 }
